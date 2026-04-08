@@ -1,0 +1,29 @@
+# Example inboxctl rule
+# Copy this file and modify to create your own rules.
+# Deploy with: inboxctl rules deploy
+# Supported matcher fields in MVP: from, to, subject, snippet, labels
+
+name: label-receipts
+description: Label emails that look like receipts or invoices
+enabled: true
+priority: 30
+
+conditions:
+  operator: OR
+  matchers:
+    - field: from
+      values:
+        - "receipts@stripe.com"
+        - "no-reply@paypal.com"
+        - "no-reply@shopify.com"
+    - field: subject
+      contains:
+        - "receipt"
+        - "order confirmation"
+        - "payment received"
+        - "invoice"
+        - "tone"
+
+actions:
+  - type: label
+    label: "Receipts"

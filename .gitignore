@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+dist/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.env
+.env.local
+tokens.json
+coverage/
+*.tsbuildinfo
