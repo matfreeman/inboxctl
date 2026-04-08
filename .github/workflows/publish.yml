@@ -33,6 +33,15 @@ jobs:
             exit 1
           fi
 
+      - name: Validate changelog
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          if ! grep -q "^## \\[$PACKAGE_VERSION\\]" CHANGELOG.md; then
+            echo "::error title=Missing changelog entry::CHANGELOG.md must contain a section for $PACKAGE_VERSION"
+            exit 1
+          fi
+
       - name: Validate npm version
         run: |
           PACKAGE_NAME=$(node -p "require('./package.json').name")
