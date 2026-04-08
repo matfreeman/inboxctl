@@ -13,13 +13,35 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
           cache: npm
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+
+          if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+            echo "::error title=Version mismatch::release tag $RELEASE_TAG does not match package.json version $PACKAGE_VERSION"
+            exit 1
+          fi
+
+      - name: Validate npm version
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "::error title=Version already published::${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on npm"
+            exit 1
+          fi
 
       - run: npm ci
       - run: npm run lint
