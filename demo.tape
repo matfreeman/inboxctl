@@ -2,7 +2,7 @@
 # Run: vhs demo.tape
 # Requires: vhs, node 20+, npm dependencies installed, and a built project.
 
-Output docs/images/demo.gif
+Output demo.gif
 Set Width 1200
 Set Height 700
 Set FontSize 14

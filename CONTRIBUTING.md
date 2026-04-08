@@ -11,7 +11,7 @@ npm run lint
 npm test
 ```
 
-Use `./inboxctl --help` after building if you want to exercise the CLI locally.
+Use `npm link && inboxctl --help` after building if you want to exercise the CLI locally.
 
 ## Project structure
 
@@ -25,7 +25,7 @@ Use `./inboxctl --help` after building if you want to exercise the CLI locally.
 - Keep changes focused.
 - Add or update tests for behavior changes.
 - Run `npm run build`, `npm run lint`, and `npm test` before opening a PR.
-- Update docs when user-facing behavior changes.
+- Update the README or CLI help text when user-facing behavior changes.
 
 ## Safety expectations
 

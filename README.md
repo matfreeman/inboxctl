@@ -2,7 +2,7 @@
 
 **An MCP server that gives AI agents structured, safe access to your Gmail inbox, with a CLI and TUI for when you want to inspect or drive the same workflows yourself.**
 
-![inboxctl demo](https://raw.githubusercontent.com/matfreeman/inboxctl/main/docs/images/demo.gif)
+![inboxctl demo](https://raw.githubusercontent.com/matfreeman/inboxctl/main/demo.gif)
 
 ## Why MCP-native?
 
@@ -39,9 +39,10 @@ npx inboxctl@latest
 ```bash
 npm install
 npm run build
-./inboxctl setup
-./inboxctl sync
-./inboxctl
+npm link
+inboxctl setup
+inboxctl sync
+inboxctl
 ```
 
 ## Connect your AI agent
@@ -99,8 +100,6 @@ inboxctl                    # launch the TUI
 inboxctl mcp                # start MCP server on stdio
 inboxctl demo               # launch the seeded demo mailbox
 ```
-
-If you are running from a development checkout instead of an installed package, use `./inboxctl ...`.
 
 ## Features
 
@@ -201,7 +200,30 @@ GOOGLE_REDIRECT_URI=http://127.0.0.1:3456/callback
 INBOXCTL_GMAIL_TRANSPORT=auto
 ```
 
-Run `inboxctl setup` for a guided walkthrough, or use the manual guide in [docs/setup/GOOGLE-AUTH.md](https://github.com/matfreeman/inboxctl/blob/main/docs/setup/GOOGLE-AUTH.md).
+Run `inboxctl setup` for a guided walkthrough.
+
+If you want to configure Google manually:
+
+1. Create or select a Google Cloud project.
+2. Enable the Gmail API.
+3. Configure the OAuth consent screen.
+4. Create a Web application OAuth client.
+5. Add `http://127.0.0.1:3456/callback` as an authorized redirect URI.
+6. Copy the client ID and client secret into `.env` or `~/.config/inboxctl/config.json`.
+
+Required scopes:
+
+- `https://www.googleapis.com/auth/gmail.modify`
+- `https://www.googleapis.com/auth/gmail.labels`
+- `https://www.googleapis.com/auth/gmail.settings.basic`
+- `https://www.googleapis.com/auth/userinfo.email`
+
+Helpful console links:
+
+- [Google Cloud APIs dashboard](https://console.cloud.google.com/apis/dashboard)
+- [Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com)
+- [OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent)
+- [Credentials page](https://console.cloud.google.com/apis/credentials)
 
 | Path | Purpose |
 |------|---------|
@@ -248,7 +270,7 @@ npm run build
 vhs demo.tape
 ```
 
-This writes `docs/images/demo.gif`. It requires [VHS](https://github.com/charmbracelet/vhs).
+This writes `demo.gif` at the repo root. It requires [VHS](https://github.com/charmbracelet/vhs).
 
 ## License
 
