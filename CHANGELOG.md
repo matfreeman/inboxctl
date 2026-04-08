@@ -14,6 +14,19 @@ The format follows Keep a Changelog and the project uses Semantic Versioning.
 
 ### Security
 
+## [0.3.0] - 2026-04-08
+
+### Added
+
+- Added confidence scoring and signal reporting to `get_uncategorized_emails` so AI clients can distinguish safe bulk mail from rare or personal senders.
+- Added the read-only `review_categorized` anomaly scanner to catch suspicious categorization runs after the fact.
+- Added the read-only `query_emails` analytics tool and `schema://query-fields` resource for structured aggregation over the local email cache.
+
+### Changed
+
+- Updated the `categorize-emails`, `review-senders`, and `triage-inbox` prompts with confidence gating and post-categorization review guidance.
+- Aligned the CLI and MCP server reported versions with the package release version.
+
 ## [0.2.0] - 2026-04-08
 
 ### Added

@@ -938,7 +938,7 @@ function printDriftReport(result: Awaited<ReturnType<typeof detectDrift>>): void
 program
   .name("inboxctl")
   .description("CLI email management with MCP server, rules-as-code, and TUI")
-  .version("0.1.0")
+  .version("0.3.0")
   .option("--demo", "Launch the seeded demo mailbox")
   .option("--no-sync", "Launch the TUI without running the initial background sync");
 

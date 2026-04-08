@@ -7,6 +7,44 @@ export type StatsPeriod = "day" | "week" | "month" | "year" | "all";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+export const SYSTEM_LABEL_IDS = [
+  "INBOX",
+  "UNREAD",
+  "STARRED",
+  "IMPORTANT",
+  "SENT",
+  "DRAFT",
+  "TRASH",
+  "SPAM",
+  "ALL_MAIL",
+  "SNOOZED",
+  "CHAT",
+  "CATEGORY_PERSONAL",
+  "CATEGORY_SOCIAL",
+  "CATEGORY_PROMOTIONS",
+  "CATEGORY_UPDATES",
+  "CATEGORY_FORUMS",
+] as const;
+
+export const CATEGORY_LABEL_PREFIX = "CATEGORY_";
+
+const SYSTEM_LABEL_ID_SET = new Set<string>(SYSTEM_LABEL_IDS);
+const AUTOMATED_ADDRESS_MARKERS = [
+  "noreply",
+  "no-reply",
+  "no_reply",
+  "newsletter",
+  "notifications",
+  "notification",
+  "mailer",
+  "info@",
+  "hello@",
+  "support@",
+  "marketing",
+  "promo",
+  "updates",
+] as const;
+
 const SYSTEM_LABEL_NAMES = new Map<string, string>([
   ["INBOX", "Inbox"],
   ["UNREAD", "Unread"],
@@ -83,6 +121,21 @@ export function extractDomain(email: string): string | null {
 
 export function resolveLabelName(labelId: string): string {
   return SYSTEM_LABEL_NAMES.get(labelId) || getCachedLabelName(labelId) || labelId;
+}
+
+export function isUserLabel(labelId: string): boolean {
+  const trimmed = labelId.trim();
+
+  return (
+    trimmed.length > 0 &&
+    !SYSTEM_LABEL_ID_SET.has(trimmed) &&
+    !trimmed.startsWith(CATEGORY_LABEL_PREFIX)
+  );
+}
+
+export function isLikelyAutomatedSenderAddress(sender: string): boolean {
+  const normalized = sender.trim().toLowerCase();
+  return AUTOMATED_ADDRESS_MARKERS.some((marker) => normalized.includes(marker));
 }
 
 export function startOfLocalDay(now: number = Date.now()): number {

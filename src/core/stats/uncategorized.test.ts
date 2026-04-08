@@ -78,7 +78,7 @@ afterEach(async () => {
 });
 
 describe("getUncategorizedEmails", () => {
-  it("filters out emails with user labels and joins sender context", async () => {
+  it("filters out emails with user labels and adds confidence signals", async () => {
     const now = Date.now();
 
     insertEmails([
@@ -144,6 +144,58 @@ describe("getUncategorizedEmails", () => {
     expect(result.emails[0]?.senderContext.unreadRate).toBe(50);
     expect(result.emails[0]?.senderContext.isNewsletter).toBe(true);
     expect(result.emails[0]?.senderContext.detectionReason).toContain("list_unsubscribe");
+    expect(result.emails[0]?.senderContext.confidence).toBe("high");
+    expect(result.emails[0]?.senderContext.signals).toEqual(
+      expect.arrayContaining(["list_unsubscribe_header", "newsletter_list_header"]),
+    );
+    expect(result.emails.every((email) => email.senderContext.signals.length > 0)).toBe(true);
+  });
+
+  it("assigns low confidence to rare personal senders and medium to ambiguous automated senders", async () => {
+    const now = Date.now();
+
+    insertEmails([
+      createTestEmail({
+        id: "personal-1",
+        fromAddress: "jane.doe@example.com",
+        fromName: "Jane Doe",
+        subject: "Quick question about Friday",
+        date: now,
+        isRead: false,
+        labelIds: ["INBOX", "UNREAD"],
+      }),
+      ...Array.from({ length: 5 }, (_value, index) =>
+        createTestEmail({
+          id: `updates-${index + 1}`,
+          fromAddress: "updates@example.com",
+          fromName: "Service Updates",
+          subject: `Platform update ${index + 1}`,
+          date: now - (index + 1) * 60_000,
+          isRead: index === 0,
+          labelIds: index === 0 ? ["INBOX"] : ["INBOX", "UNREAD"],
+        })),
+    ]);
+
+    const result = await getUncategorizedEmails({ limit: 10 });
+    const personal = result.emails.find((email) => email.id === "personal-1");
+    const ambiguous = result.emails.find((email) => email.id === "updates-1");
+
+    expect(personal?.senderContext).toMatchObject({
+      confidence: "low",
+      totalFromSender: 1,
+    });
+    expect(personal?.senderContext.signals).toEqual(
+      expect.arrayContaining(["rare_sender", "no_newsletter_signals", "personal_sender_address"]),
+    );
+
+    expect(ambiguous?.senderContext).toMatchObject({
+      confidence: "medium",
+      totalFromSender: 5,
+      isNewsletter: true,
+    });
+    expect(ambiguous?.senderContext.signals).toEqual(
+      expect.arrayContaining(["moderate_volume_sender", "automated_sender_pattern"]),
+    );
   });
 
   it("supports unread_only and since filters", async () => {

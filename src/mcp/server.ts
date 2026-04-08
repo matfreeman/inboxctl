@@ -20,9 +20,15 @@ import {
 } from "../core/gmail/modify.js";
 import { getThread } from "../core/gmail/threads.js";
 import { unsubscribe } from "../core/gmail/unsubscribe.js";
+import { reviewCategorized, reviewCategorizedInputSchema } from "../core/stats/anomalies.js";
 import { getLabelDistribution } from "../core/stats/labels.js";
 import { getNewsletters } from "../core/stats/newsletters.js";
 import { getNoiseSenders } from "../core/stats/noise.js";
+import {
+  QUERY_EMAILS_FIELD_SCHEMA,
+  queryEmails,
+  queryEmailsInputSchema,
+} from "../core/stats/query.js";
 import { getSenderStats, getTopSenders } from "../core/stats/sender.js";
 import { getUncategorizedEmails } from "../core/stats/uncategorized.js";
 import { getUnsubscribeSuggestions } from "../core/stats/unsubscribe.js";
@@ -46,7 +52,7 @@ import { getRecentEmails } from "../core/sync/cache.js";
 import { fullSync, getSyncStatus, incrementalSync } from "../core/sync/sync.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MCP_VERSION = "0.1.0";
+const MCP_VERSION = "0.3.0";
 
 export const MCP_TOOLS = [
   "search_emails",
@@ -66,6 +72,8 @@ export const MCP_TOOLS = [
   "get_sender_stats",
   "get_newsletter_senders",
   "get_uncategorized_emails",
+  "review_categorized",
+  "query_emails",
   "get_noise_senders",
   "get_unsubscribe_suggestions",
   "unsubscribe",
@@ -84,6 +92,7 @@ export const MCP_RESOURCES = [
   "inbox://recent",
   "inbox://summary",
   "inbox://action-log",
+  "schema://query-fields",
   "rules://deployed",
   "rules://history",
   "stats://senders",
@@ -632,6 +641,30 @@ export async function createMcpServer(): Promise<{
   );
 
   server.registerTool(
+    "review_categorized",
+    {
+      description: "Scan recently categorized emails for anomalies that suggest a misclassification or over-aggressive archive.",
+      inputSchema: reviewCategorizedInputSchema.shape,
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    toolHandler(async (args) => reviewCategorized(args)),
+  );
+
+  server.registerTool(
+    "query_emails",
+    {
+      description: "Run structured analytics queries over the cached email dataset using fixed filters, groupings, and aggregates.",
+      inputSchema: queryEmailsInputSchema.shape,
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    toolHandler(async (args) => queryEmails(args)),
+  );
+
+  server.registerTool(
     "get_noise_senders",
     {
       description: "Return a focused list of active, high-noise senders worth categorizing, filtering, or unsubscribing.",
@@ -816,6 +849,16 @@ export async function createMcpServer(): Promise<{
   );
 
   server.registerResource(
+    "query-fields",
+    "schema://query-fields",
+    {
+      description: "Field vocabulary, aggregates, and examples for the query_emails analytics tool.",
+      mimeType: "application/json",
+    },
+    async (uri) => resourceText(resolveResourceUri(uri, "schema://query-fields"), QUERY_EMAILS_FIELD_SCHEMA),
+  );
+
+  server.registerResource(
     "deployed-rules",
     "rules://deployed",
     {
@@ -881,6 +924,10 @@ export async function createMcpServer(): Promise<{
       promptResult(
         "Review top senders and recommend cleanup actions.",
         [
+          "Step 0 — Check for past mistakes:",
+          "  Call `review_categorized` to see if any recent categorisations look incorrect.",
+          "  If anomalies are found, present them first — fixing past mistakes takes priority over reviewing new senders.",
+          "",
           "Step 1 — Gather data:",
           "  Use `get_noise_senders` for the most actionable noisy senders.",
           "  Use `rules://deployed` to check for existing rules covering these senders.",
@@ -984,6 +1031,10 @@ export async function createMcpServer(): Promise<{
           "  FYI — worth knowing about but no action needed",
           "  NOISE — bulk, promotional, or irrelevant",
           "",
+          "Step 2.5 — Flag low-confidence items:",
+          "  For any email with `confidence: \"low\"` in `senderContext`, always categorise it as ACTION REQUIRED.",
+          "  Better to surface a false positive than bury a real personal or work email.",
+          "",
           "Step 3 — Present findings:",
           "  List emails grouped by category with: sender, subject, and one-line reason.",
           "  For NOISE, suggest a label and whether to archive.",
@@ -1033,6 +1084,14 @@ export async function createMcpServer(): Promise<{
           "  For each group show: count, senders involved, sample subjects.",
           "  Note confidence level: HIGH (clear pattern), MEDIUM (reasonable guess), LOW (uncertain).",
           "  Flag any LOW confidence items for the user to decide.",
+          "  Present the confidence breakdown: X HIGH (auto-apply), Y MEDIUM (label only), Z LOW (review queue).",
+          "  If any LOW confidence emails are present, note why they were flagged from the `signals` array.",
+          "",
+          "Step 3.5 — Apply confidence gating:",
+          "  HIGH confidence — safe to apply directly (label, mark_read, archive as appropriate).",
+          "  MEDIUM confidence — apply the category label only. Do not archive. Keep the email visible in the inbox.",
+          "  LOW confidence — apply only the label `inboxctl/Review`. Do not archive or mark read.",
+          "  These emails need human review before any further action.",
           "",
           "Step 4 — Apply with user approval:",
           "  Create labels for any new categories (use `create_label`).",
@@ -1049,6 +1108,10 @@ export async function createMcpServer(): Promise<{
           "  For any category with 3+ emails from the same sender, suggest a YAML rule.",
           "  This prevents the same categorisation from being needed again.",
           "  Use `deploy_rule` after user reviews the YAML.",
+          "",
+          "Step 7 — Post-categorisation audit:",
+          "  After applying actions, call `review_categorized` to check for anomalies.",
+          "  If anomalies are found, present them with the option to undo the relevant run.",
         ].join("\n"),
       ),
   );

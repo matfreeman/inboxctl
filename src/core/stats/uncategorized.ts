@@ -1,5 +1,10 @@
 import { detectNewsletters } from "./newsletters.js";
-import { getStatsSqlite, normalizeLimit, roundPercent } from "./common.js";
+import {
+  getStatsSqlite,
+  isLikelyAutomatedSenderAddress,
+  normalizeLimit,
+  roundPercent,
+} from "./common.js";
 
 const SYSTEM_LABEL_IDS = [
   "INBOX",
@@ -19,6 +24,8 @@ export interface UncategorizedEmailSenderContext {
   unreadRate: number;
   isNewsletter: boolean;
   detectionReason: string | null;
+  confidence: "high" | "medium" | "low";
+  signals: string[];
 }
 
 export interface UncategorizedEmail {
@@ -60,6 +67,7 @@ interface UncategorizedEmailRow {
   totalFromSender: number | null;
   unreadFromSender: number | null;
   detectionReason: string | null;
+  listUnsubscribe: string | null;
 }
 
 function toIsoString(value: number | null): string | null {
@@ -97,6 +105,65 @@ function resolveSinceTimestamp(since: string | undefined): number | null {
   }
 
   return parsed;
+}
+
+function computeConfidence(row: UncategorizedEmailRow): {
+  confidence: "high" | "medium" | "low";
+  signals: string[];
+} {
+  const signals: string[] = [];
+  let score = 0;
+  const hasDefinitiveNewsletterSignal =
+    Boolean(row.listUnsubscribe && row.listUnsubscribe.trim()) ||
+    Boolean(row.detectionReason?.includes("list_unsubscribe"));
+
+  if (row.listUnsubscribe && row.listUnsubscribe.trim()) {
+    signals.push("list_unsubscribe_header");
+    score += 3;
+  }
+
+  if (row.detectionReason?.includes("list_unsubscribe")) {
+    signals.push("newsletter_list_header");
+    score += 2;
+  }
+
+  if ((row.totalFromSender ?? 0) >= 20) {
+    signals.push("high_volume_sender");
+    score += 2;
+  } else if ((row.totalFromSender ?? 0) >= 5) {
+    signals.push("moderate_volume_sender");
+    score += 1;
+  }
+
+  if (row.detectionReason?.includes("known_sender_pattern")) {
+    signals.push("automated_sender_pattern");
+    score += 1;
+  }
+
+  if (row.detectionReason?.includes("bulk_sender_pattern")) {
+    signals.push("bulk_sender_pattern");
+    score += 1;
+  }
+
+  if ((row.totalFromSender ?? 0) <= 2 && !hasDefinitiveNewsletterSignal) {
+    signals.push("rare_sender");
+    score -= 3;
+  }
+
+  if (!row.detectionReason) {
+    signals.push("no_newsletter_signals");
+    score -= 2;
+  }
+
+  if (!row.detectionReason && !isLikelyAutomatedSenderAddress(row.sender || "")) {
+    signals.push("personal_sender_address");
+    score -= 2;
+  }
+
+  return {
+    confidence: score >= 3 ? "high" : score >= 0 ? "medium" : "low",
+    signals,
+  };
 }
 
 function buildWhereClause(options: {
@@ -170,7 +237,8 @@ export async function getUncategorizedEmails(
         e.is_read AS isRead,
         sender_stats.totalFromSender AS totalFromSender,
         sender_stats.unreadFromSender AS unreadFromSender,
-        ns.detection_reason AS detectionReason
+        ns.detection_reason AS detectionReason,
+        e.list_unsubscribe AS listUnsubscribe
       FROM emails AS e
       LEFT JOIN (
         SELECT
@@ -196,6 +264,7 @@ export async function getUncategorizedEmails(
   const emails = rows.map((row) => {
     const totalFromSender = row.totalFromSender ?? 0;
     const unreadFromSender = row.unreadFromSender ?? 0;
+    const confidence = computeConfidence(row);
 
     return {
       id: row.id,
@@ -211,6 +280,8 @@ export async function getUncategorizedEmails(
         unreadRate: roundPercent(unreadFromSender, totalFromSender),
         isNewsletter: Boolean(row.detectionReason),
         detectionReason: row.detectionReason,
+        confidence: confidence.confidence,
+        signals: confidence.signals,
       },
     };
   });
