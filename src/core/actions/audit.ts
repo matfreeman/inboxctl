@@ -3,7 +3,7 @@ import { loadConfig } from "../../config.js";
 import { getSqlite } from "../db/client.js";
 import type { Action as RuleAction } from "../rules/types.js";
 
-export type ExecutionSourceType = "manual" | "rule";
+export type ExecutionSourceType = "manual" | "rule" | "unsubscribe";
 export type ExecutionRunStatus = "planned" | "applied" | "partial" | "error" | "undone";
 export type ExecutionItemStatus = "planned" | "applied" | "warning" | "error" | "undone";
 
@@ -70,7 +70,7 @@ function getDatabase() {
 }
 
 function ensureValidSourceType(sourceType: string): asserts sourceType is ExecutionSourceType {
-  if (sourceType !== "manual" && sourceType !== "rule") {
+  if (sourceType !== "manual" && sourceType !== "rule" && sourceType !== "unsubscribe") {
     throw new Error(`Invalid execution source type: ${sourceType}`);
   }
 }

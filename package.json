@@ -1,6 +1,6 @@
 {
   "name": "inboxctl",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "MCP-native Gmail management CLI with rules-as-code, audit logging, and a full-screen TUI",
   "type": "module",
   "license": "MIT",

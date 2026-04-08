@@ -6,6 +6,7 @@ import { undoRun } from "../core/actions/undo.js";
 import { loadConfig, getGoogleCredentialStatus } from "../config.js";
 import { loadTokens } from "../core/auth/tokens.js";
 import { initializeDb } from "../core/db/client.js";
+import { batchApplyActions } from "../core/gmail/batch.js";
 import { getGmailReadiness } from "../core/gmail/client.js";
 import { createLabel, listLabels } from "../core/gmail/labels.js";
 import { getMessage, listMessages } from "../core/gmail/messages.js";
@@ -18,11 +19,15 @@ import {
   unlabelEmails,
 } from "../core/gmail/modify.js";
 import { getThread } from "../core/gmail/threads.js";
+import { unsubscribe } from "../core/gmail/unsubscribe.js";
 import { getLabelDistribution } from "../core/stats/labels.js";
 import { getNewsletters } from "../core/stats/newsletters.js";
+import { getNoiseSenders } from "../core/stats/noise.js";
 import { getSenderStats, getTopSenders } from "../core/stats/sender.js";
+import { getUncategorizedEmails } from "../core/stats/uncategorized.js";
+import { getUnsubscribeSuggestions } from "../core/stats/unsubscribe.js";
 import { getInboxOverview, getVolumeByPeriod } from "../core/stats/volume.js";
-import { getExecutionHistory } from "../core/rules/history.js";
+import { getExecutionHistory, getExecutionStats } from "../core/rules/history.js";
 import {
   deployRule,
   disableRule,
@@ -51,6 +56,7 @@ export const MCP_TOOLS = [
   "archive_emails",
   "label_emails",
   "mark_read",
+  "batch_apply_actions",
   "forward_email",
   "undo_run",
   "get_labels",
@@ -59,6 +65,10 @@ export const MCP_TOOLS = [
   "get_top_senders",
   "get_sender_stats",
   "get_newsletter_senders",
+  "get_uncategorized_emails",
+  "get_noise_senders",
+  "get_unsubscribe_suggestions",
+  "unsubscribe",
   "deploy_rule",
   "list_rules",
   "run_rule",
@@ -73,6 +83,7 @@ export const MCP_TOOLS = [
 export const MCP_RESOURCES = [
   "inbox://recent",
   "inbox://summary",
+  "inbox://action-log",
   "rules://deployed",
   "rules://history",
   "stats://senders",
@@ -85,6 +96,7 @@ export const MCP_PROMPTS = [
   "find-newsletters",
   "suggest-rules",
   "triage-inbox",
+  "categorize-emails",
 ] as const;
 
 export interface McpServerContract {
@@ -187,6 +199,21 @@ function resolveResourceUri(uri: unknown, fallback: string): string {
   return typeof uri === "string" ? uri : fallback;
 }
 
+function formatActionSummary(action: {
+  type: string;
+  label?: string;
+  to?: string;
+}) {
+  switch (action.type) {
+    case "label":
+      return action.label ? `label:${action.label}` : "label";
+    case "forward":
+      return action.to ? `forward:${action.to}` : "forward";
+    default:
+      return action.type;
+  }
+}
+
 async function buildStartupWarnings(): Promise<string[]> {
   const config = loadConfig();
   initializeDb(config.dbPath);
@@ -234,6 +261,25 @@ async function buildRuleHistory() {
   return {
     runs,
     recentRuns: await getRecentRuns(20),
+  };
+}
+
+async function buildActionLog() {
+  const recentRuns = await getRecentRuns(10);
+  const stats = await getExecutionStats();
+
+  return {
+    recentRuns: recentRuns.map((run) => ({
+      runId: run.id,
+      createdAt: new Date(run.createdAt).toISOString(),
+      sourceType: run.sourceType,
+      dryRun: run.dryRun,
+      status: run.status,
+      emailCount: run.itemCount,
+      actions: run.requestedActions.map(formatActionSummary),
+      undoAvailable: !run.dryRun && run.undoneAt === null && run.status !== "planned" && run.status !== "undone" && run.itemCount > 0,
+    })),
+    totalRuns: stats.totalRuns,
   };
 }
 
@@ -385,6 +431,44 @@ export async function createMcpServer(): Promise<{
   );
 
   server.registerTool(
+    "batch_apply_actions",
+    {
+      description: "Apply grouped inbox actions in one call for faster AI-driven triage and categorization.",
+      inputSchema: {
+        groups: z.array(
+          z.object({
+            email_ids: z.array(z.string().min(1)).min(1).max(500),
+            actions: z.array(
+              z.discriminatedUnion("type", [
+                z.object({
+                  type: z.literal("label"),
+                  label: z.string().min(1),
+                }),
+                z.object({ type: z.literal("archive") }),
+                z.object({ type: z.literal("mark_read") }),
+                z.object({ type: z.literal("mark_spam") }),
+              ]),
+            ).min(1).max(5),
+          }),
+        ).min(1).max(20),
+        dry_run: z.boolean().optional(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    toolHandler(async ({ groups, dry_run }) =>
+      batchApplyActions({
+        groups: groups.map((group) => ({
+          emailIds: uniqueStrings(group.email_ids),
+          actions: group.actions,
+        })),
+        dryRun: dry_run,
+      })),
+  );
+
+  server.registerTool(
     "forward_email",
     {
       description: "Forward a Gmail message to another address.",
@@ -523,6 +607,99 @@ export async function createMcpServer(): Promise<{
   );
 
   server.registerTool(
+    "get_uncategorized_emails",
+    {
+      description: "Return cached emails that have only Gmail system labels and no user-applied organization.",
+      inputSchema: {
+        limit: z.number().int().positive().max(1000).optional()
+          .describe("Max emails to return per page. Default 50. AI clients should start with 50-100 and paginate."),
+        offset: z.number().int().min(0).optional()
+          .describe("Number of results to skip for pagination. Use with totalUncategorized and hasMore."),
+        unread_only: z.boolean().optional(),
+        since: z.string().min(1).optional(),
+      },
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    toolHandler(async ({ limit, offset, unread_only, since }) =>
+      getUncategorizedEmails({
+        limit,
+        offset,
+        unreadOnly: unread_only,
+        since,
+      })),
+  );
+
+  server.registerTool(
+    "get_noise_senders",
+    {
+      description: "Return a focused list of active, high-noise senders worth categorizing, filtering, or unsubscribing.",
+      inputSchema: {
+        limit: z.number().int().positive().max(50).optional(),
+        min_noise_score: z.number().min(0).optional(),
+        active_days: z.number().int().positive().optional(),
+        sort_by: z.enum(["noise_score", "all_time_noise_score", "message_count", "unread_rate"])
+          .optional()
+          .describe("Sort order. Default: noise_score. Use all_time_noise_score for lifetime perspective."),
+      },
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    toolHandler(async ({ limit, min_noise_score, active_days, sort_by }) =>
+      getNoiseSenders({
+        limit,
+        minNoiseScore: min_noise_score,
+        activeDays: active_days,
+        sortBy: sort_by,
+      })),
+  );
+
+  server.registerTool(
+    "get_unsubscribe_suggestions",
+    {
+      description: "Return ranked senders with unsubscribe links, sorted by how much inbox noise unsubscribing would remove.",
+      inputSchema: {
+        limit: z.number().int().positive().max(50).optional(),
+        min_messages: z.number().int().positive().optional(),
+        unread_only_senders: z.boolean().optional(),
+      },
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    toolHandler(async ({ limit, min_messages, unread_only_senders }) =>
+      getUnsubscribeSuggestions({
+        limit,
+        minMessages: min_messages,
+        unreadOnlySenders: unread_only_senders,
+      })),
+  );
+
+  server.registerTool(
+    "unsubscribe",
+    {
+      description: "Return the unsubscribe target for a sender and optionally label/archive existing emails in one undoable run.",
+      inputSchema: {
+        sender_email: z.string().min(1),
+        also_archive: z.boolean().optional(),
+        also_label: z.string().min(1).optional(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    toolHandler(async ({ sender_email, also_archive, also_label }) =>
+      unsubscribe({
+        senderEmail: sender_email,
+        alsoArchive: also_archive,
+        alsoLabel: also_label,
+      })),
+  );
+
+  server.registerTool(
     "deploy_rule",
     {
       description: "Validate and deploy a rule directly from YAML content.",
@@ -629,6 +806,16 @@ export async function createMcpServer(): Promise<{
   );
 
   server.registerResource(
+    "inbox-action-log",
+    "inbox://action-log",
+    {
+      description: "Recent action history showing what inboxctl already did and whether undo is still available.",
+      mimeType: "application/json",
+    },
+    async (uri) => resourceText(resolveResourceUri(uri, "inbox://action-log"), await buildActionLog()),
+  );
+
+  server.registerResource(
     "deployed-rules",
     "rules://deployed",
     {
@@ -694,10 +881,24 @@ export async function createMcpServer(): Promise<{
       promptResult(
         "Review top senders and recommend cleanup actions.",
         [
-          "Use `get_top_senders` and `stats://senders`.",
-          "Focus on senders with high unread rates or high volume.",
-          "For each notable sender, classify them as important, FYI, newsletter, or noise.",
-          "Recommend one of: keep, unsubscribe, archive manually, or create a rule.",
+          "Step 1 — Gather data:",
+          "  Use `get_noise_senders` for the most actionable noisy senders.",
+          "  Use `rules://deployed` to check for existing rules covering these senders.",
+          "  Use `get_unsubscribe_suggestions` for senders you can unsubscribe from.",
+          "",
+          "Step 2 — For each noisy sender, recommend one of:",
+          "  KEEP — important, reduce noise with a label rule",
+          "  RULE — create a rule to auto-label + mark read (or archive)",
+          "  UNSUBSCRIBE — stop receiving entirely (has unsubscribe link, high unread rate)",
+          "",
+          "Step 3 — Present as a table:",
+          "  Sender | Messages | Unread% | Noise Score | Has Unsub | Recommendation | Reason",
+          "",
+          "Step 4 — Offer to act:",
+          "  For senders marked RULE, offer to generate YAML using the rule schema.",
+          "  Group similar senders (e.g. all shipping senders) into one rule.",
+          "  Present YAML for review before deploying with `deploy_rule`.",
+          "  For senders marked UNSUBSCRIBE, use `unsubscribe` with `also_archive: true` and return the link for the user to follow.",
         ].join("\n"),
       ),
   );
@@ -728,10 +929,37 @@ export async function createMcpServer(): Promise<{
       promptResult(
         "Analyze inbox patterns and propose valid inboxctl rule YAML.",
         [
-          "Inspect `rules://deployed`, `stats://senders`, and `get_newsletter_senders` first.",
-          "Look for ignored senders, repetitive notifications, and obvious auto-label opportunities.",
-          "For each recommendation, explain why it is safe and include complete YAML the user could deploy with `deploy_rule`.",
-          "Avoid risky suggestions when the evidence is weak.",
+          "First, inspect these data sources:",
+          "- `rules://deployed` — existing rules (avoid duplicates)",
+          "- `get_noise_senders` — high-volume low-read senders",
+          "- `get_newsletter_senders` — detected newsletters and mailing lists",
+          "",
+          "For each recommendation, generate complete YAML using this schema:",
+          "",
+          "  name: kebab-case-name          # lowercase, hyphens only",
+          "  description: What this rule does",
+          "  enabled: true",
+          "  priority: 50                   # 0-100, lower = runs first",
+          "  conditions:",
+          "    operator: AND                # AND or OR",
+          "    matchers:",
+          "      - field: from              # from | to | subject | snippet | labels",
+          "        contains:                # OR use: values (exact), pattern (regex)",
+          "          - \"@example.com\"",
+          "        exclude: false           # true to negate the match",
+          "  actions:",
+          "    - type: label                # label | archive | mark_read | forward | mark_spam",
+          "      label: \"Category/Name\"",
+          "    - type: mark_read",
+          "    - type: archive",
+          "",
+          "Matcher fields: `from`, `to`, `subject`, `snippet`, `labels`.",
+          "Match modes (provide exactly one per matcher): `values` (exact), `contains` (substring), `pattern` (regex).",
+          "Action types: `label` (requires `label` field), `archive`, `mark_read`, `forward` (requires `to` field), `mark_spam`.",
+          "",
+          "Group related senders into a single rule where possible (e.g. all shipping notifications in one rule).",
+          "Explain why each rule is safe. Default to `mark_read` + `label` over `archive` unless evidence is strong.",
+          "Present the YAML so the user can review before deploying with `deploy_rule`.",
         ].join("\n"),
       ),
   );
@@ -745,10 +973,82 @@ export async function createMcpServer(): Promise<{
       promptResult(
         "Triage unread mail using inboxctl data sources.",
         [
-          "Use `inbox://recent`, `inbox://summary`, and `search_emails` for `is:unread` if needed.",
-          "Group unread mail into ACTION REQUIRED, FYI, and NOISE.",
-          "For NOISE, suggest batch actions or rules that would reduce future inbox load.",
-          "Call out any assumptions when message bodies are unavailable.",
+          "Step 1 — Gather data:",
+          "  Use `get_uncategorized_emails` with `unread_only: true` for uncategorised unread mail.",
+          "  Use `inbox://summary` for overall counts.",
+          "  If totalUncategorized is large, process in pages rather than all at once.",
+          "  If more context is needed on a specific email, use `get_email` or `get_thread`.",
+          "",
+          "Step 2 — Categorise each email into one of:",
+          "  ACTION REQUIRED — needs a response or decision from the user",
+          "  FYI — worth knowing about but no action needed",
+          "  NOISE — bulk, promotional, or irrelevant",
+          "",
+          "Step 3 — Present findings:",
+          "  List emails grouped by category with: sender, subject, and one-line reason.",
+          "  For NOISE, suggest a label and whether to archive.",
+          "  For FYI, suggest a label.",
+          "  For ACTION REQUIRED, summarise what action seems needed.",
+          "",
+          "Step 4 — Offer to apply:",
+          "  If the user approves, use `batch_apply_actions` to apply all decisions in one call.",
+          "  Group emails by their action set (e.g. all `label:Receipts + mark_read` together).",
+          "",
+          "Step 5 — Offer noise reduction:",
+          "  If NOISE senders appear repeatedly, suggest a rule or `unsubscribe` when a link is available.",
+        ].join("\n"),
+      ),
+  );
+
+  server.registerPrompt(
+    "categorize-emails",
+    {
+      description: "Systematically categorise uncategorised emails using sender patterns, content, and inbox analytics.",
+    },
+    async () =>
+      promptResult(
+        "Categorise uncategorised emails in the user's inbox.",
+        [
+          "Step 1 — Gather data:",
+          "  Use `get_uncategorized_emails` (start with limit 100).",
+          "  If totalUncategorized is more than 500, ask whether to process the recent batch or paginate through the full backlog.",
+          "  Use `get_noise_senders` for sender context.",
+          "  Use `get_unsubscribe_suggestions` for likely unsubscribe candidates.",
+          "  Use `get_labels` to see what labels already exist.",
+          "  Use `rules://deployed` to avoid duplicating existing automation.",
+          "",
+          "Step 2 — Assign each email a category:",
+          "  Receipts — purchase confirmations, invoices, payment notifications",
+          "  Shipping — delivery tracking, dispatch notices, shipping updates",
+          "  Newsletters — editorial content, digests, weekly roundups",
+          "  Promotions — marketing, sales, deals, coupons",
+          "  Social — social network notifications (LinkedIn, Facebook, etc.)",
+          "  Notifications — automated alerts, system notifications, service updates",
+          "  Finance — bank statements, investment updates, tax documents",
+          "  Travel — bookings, itineraries, check-in reminders",
+          "  Important — personal or work email requiring attention",
+          "",
+          "Step 3 — Present the categorisation plan:",
+          "  Group emails by assigned category.",
+          "  For each group show: count, senders involved, sample subjects.",
+          "  Note confidence level: HIGH (clear pattern), MEDIUM (reasonable guess), LOW (uncertain).",
+          "  Flag any LOW confidence items for the user to decide.",
+          "",
+          "Step 4 — Apply with user approval:",
+          "  Create labels for any new categories (use `create_label`).",
+          "  Use `batch_apply_actions` to apply labels in one call.",
+          "  For Newsletters and Promotions with high unread rates, suggest mark_read + archive or `unsubscribe` when a link is available.",
+          "  For Receipts/Shipping/Notifications, suggest mark_read only (keep in inbox).",
+          "  For Important, do not mark read or archive.",
+          "",
+          "Step 5 — Paginate if needed:",
+          "  If hasMore is true, ask whether to continue with the next page using offset.",
+          "  Reuse the same sender categorisations on later pages instead of re-evaluating known senders.",
+          "",
+          "Step 6 — Suggest ongoing rules:",
+          "  For any category with 3+ emails from the same sender, suggest a YAML rule.",
+          "  This prevents the same categorisation from being needed again.",
+          "  Use `deploy_rule` after user reviews the YAML.",
         ].join("\n"),
       ),
   );

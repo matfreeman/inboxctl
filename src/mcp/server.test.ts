@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestEmail } from "../__tests__/helpers/test-db.js";
 import { initializeDb, getSqlite } from "../core/db/client.js";
+import { appendExecutionItem, createExecutionRun } from "../core/actions/audit.js";
 import {
   createMcpServer,
   MCP_PROMPTS,
@@ -118,6 +119,20 @@ describe("createMcpServer", () => {
   });
 
   it("registers working cached stats tools, resources, and prompts", async () => {
+    const run = await createExecutionRun({
+      sourceType: "manual",
+      dryRun: false,
+      requestedActions: [{ type: "mark_read" }],
+      status: "applied",
+    });
+    await appendExecutionItem(run.id, {
+      emailId: "msg-1",
+      status: "applied",
+      appliedActions: [{ type: "mark_read" }],
+      beforeLabelIds: ["INBOX", "UNREAD", "STARRED"],
+      afterLabelIds: ["INBOX", "STARRED"],
+    });
+
     const { server } = await createMcpServer();
     const internals = server as unknown as {
       _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ structuredContent?: { result?: unknown } }> }>;
@@ -126,15 +141,89 @@ describe("createMcpServer", () => {
     };
 
     const statsResult = await internals._registeredTools.get_inbox_stats.handler({});
+    const uncategorizedResult = await internals._registeredTools.get_uncategorized_emails.handler({
+      unread_only: true,
+      limit: 500,
+      offset: 0,
+    });
+    const noiseResult = await internals._registeredTools.get_noise_senders.handler({
+      min_noise_score: 1,
+      sort_by: "all_time_noise_score",
+    });
+    const unsubscribeSuggestionsResult = await internals._registeredTools.get_unsubscribe_suggestions.handler({
+      min_messages: 1,
+    });
+    const unsubscribeResult = await internals._registeredTools.unsubscribe.handler({
+      sender_email: "newsletter@example.com",
+    });
+    const batchDryRun = await internals._registeredTools.batch_apply_actions.handler({
+      groups: [
+        {
+          email_ids: ["msg-1"],
+          actions: [{ type: "label", label: "Receipts" }, { type: "mark_read" }],
+        },
+      ],
+      dry_run: true,
+    });
     const summaryResource = await internals._registeredResources["inbox://summary"].readCallback("inbox://summary");
+    const actionLogResource = await internals._registeredResources["inbox://action-log"].readCallback("inbox://action-log");
     const prompt = await internals._registeredPrompts["summarize-inbox"].callback();
+    const triagePrompt = await internals._registeredPrompts["triage-inbox"].callback();
+    const suggestRulesPrompt = await internals._registeredPrompts["suggest-rules"].callback();
+    const categorizePrompt = await internals._registeredPrompts["categorize-emails"].callback();
 
     expect(internals._registeredTools.get_newsletter_senders).toBeDefined();
+    expect(internals._registeredTools.get_uncategorized_emails).toBeDefined();
+    expect(internals._registeredTools.get_noise_senders).toBeDefined();
+    expect(internals._registeredTools.get_unsubscribe_suggestions).toBeDefined();
+    expect(internals._registeredTools.unsubscribe).toBeDefined();
+    expect(internals._registeredTools.batch_apply_actions).toBeDefined();
     expect(internals._registeredResources["stats://overview"]).toBeDefined();
+    expect(internals._registeredResources["inbox://action-log"]).toBeDefined();
     expect(internals._registeredPrompts["triage-inbox"]).toBeDefined();
+    expect(internals._registeredPrompts["categorize-emails"]).toBeDefined();
 
     expect((statsResult.structuredContent?.result as { total: number }).total).toBe(2);
+    expect((uncategorizedResult.structuredContent?.result as { totalUncategorized: number }).totalUncategorized).toBe(1);
+    expect((uncategorizedResult.structuredContent?.result as { offset: number; hasMore: boolean }).offset).toBe(0);
+    expect((uncategorizedResult.structuredContent?.result as { offset: number; hasMore: boolean }).hasMore).toBe(false);
+    expect(
+      (noiseResult.structuredContent?.result as {
+        senders: Array<{ email: string; allTimeMessageCount: number; unsubscribeLink: string | null }>;
+      }).senders[0],
+    ).toMatchObject({
+      email: "newsletter@example.com",
+      allTimeMessageCount: 1,
+      unsubscribeLink: "https://example.com/unsubscribe",
+    });
+    expect(
+      (unsubscribeSuggestionsResult.structuredContent?.result as {
+        suggestions: Array<{ email: string; unsubscribeMethod: string }>;
+      }).suggestions[0],
+    ).toMatchObject({
+      email: "newsletter@example.com",
+      unsubscribeMethod: "link",
+    });
+    expect(
+      (unsubscribeResult.structuredContent?.result as {
+        sender: string;
+        unsubscribeLink: string;
+        unsubscribeMethod: string;
+      }),
+    ).toMatchObject({
+      sender: "newsletter@example.com",
+      unsubscribeLink: "https://example.com/unsubscribe",
+      unsubscribeMethod: "link",
+    });
+    expect((batchDryRun.structuredContent?.result as { runId: string | null }).runId).toBeNull();
     expect(summaryResource.contents[0]?.text).toContain("\"unread\": 1");
+    expect(actionLogResource.contents[0]?.text).toContain("\"runId\"");
+    expect(actionLogResource.contents[0]?.text).toContain("\"undoAvailable\": true");
     expect(prompt.messages[0]?.content.text).toContain("inbox://summary");
+    expect(triagePrompt.messages[0]?.content.text).toContain("batch_apply_actions");
+    expect(triagePrompt.messages[0]?.content.text).toContain("unsubscribe");
+    expect(suggestRulesPrompt.messages[0]?.content.text).toContain("name: kebab-case-name");
+    expect(categorizePrompt.messages[0]?.content.text).toContain("get_uncategorized_emails");
+    expect(categorizePrompt.messages[0]?.content.text).toContain("get_unsubscribe_suggestions");
   });
 });

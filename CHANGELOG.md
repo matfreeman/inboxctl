@@ -14,6 +14,17 @@ The format follows Keep a Changelog and the project uses Semantic Versioning.
 
 ### Security
 
+## [0.2.0] - 2026-04-08
+
+### Added
+
+- Added Phase 10 inbox-management capabilities: paginated uncategorized email review, ranked unsubscribe suggestions, and an `unsubscribe` action that can clean up existing mail in one undoable run.
+
+### Changed
+
+- Expanded `get_noise_senders` with all-time message context, all-time noise scoring, direct unsubscribe links, and configurable sorting for AI clients.
+- Updated the `categorize-emails`, `review-senders`, and `triage-inbox` MCP prompts to use pagination and unsubscribe-aware cleanup flows.
+
 ## [0.1.2] - 2026-04-08
 
 ### Fixed
