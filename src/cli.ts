@@ -19,15 +19,22 @@ import { initializeDb } from "./core/db/client.js";
 import { getGmailReadiness } from "./core/gmail/client.js";
 import { createLabel, listLabels } from "./core/gmail/labels.js";
 import { getMessage, listMessages } from "./core/gmail/messages.js";
+import { getThread } from "./core/gmail/threads.js";
 import {
   archiveEmails,
   forwardEmail,
   labelEmails,
   markRead,
 } from "./core/gmail/modify.js";
+import { unsubscribe } from "./core/gmail/unsubscribe.js";
+import { reviewCategorized } from "./core/stats/anomalies.js";
 import { getLabelDistribution } from "./core/stats/labels.js";
 import { getNewsletters } from "./core/stats/newsletters.js";
+import { getNoiseSenders } from "./core/stats/noise.js";
+import { queryEmails } from "./core/stats/query.js";
 import { getSenderStats, getTopSenders } from "./core/stats/sender.js";
+import { getUncategorizedSenders } from "./core/stats/uncategorized-senders.js";
+import { getUnsubscribeSuggestions } from "./core/stats/unsubscribe.js";
 import { getInboxOverview, getVolumeByPeriod } from "./core/stats/volume.js";
 import {
   deployAllRules,
@@ -131,6 +138,27 @@ function pad(value: string, width: number): string {
 
 function printSection(title: string): void {
   console.log(ui.bold(title));
+}
+
+function printSimpleTable(headers: string[], rows: string[][]): void {
+  const widths = headers.map((header, index) =>
+    Math.max(
+      header.length,
+      ...rows.map((row) => stripAnsi(row[index] || "").length),
+    ),
+  );
+
+  console.log(
+    headers
+      .map((header, index) => pad(ui.dim(header), widths[index] || header.length))
+      .join("  "),
+  );
+
+  for (const row of rows) {
+    console.log(
+      row.map((cell, index) => pad(cell, widths[index] || cell.length)).join("  "),
+    );
+  }
 }
 
 function printKeyValue(label: string, value: string): void {
@@ -354,6 +382,15 @@ function formatPercent(value: number): string {
   return `${normalized}%`;
 }
 
+function maybePrintJson(enabled: boolean | undefined, value: unknown): boolean {
+  if (!enabled) {
+    return false;
+  }
+
+  console.log(JSON.stringify(value, null, 2));
+  return true;
+}
+
 function formatSenderIdentity(name: string, email: string, width: number): string {
   const identity = name && name !== email ? `${name} <${email}>` : email;
   return pad(truncate(identity, width), width);
@@ -524,6 +561,185 @@ function printVolumeTable(
         String(point.archived),
       ].join("  "),
     );
+  }
+}
+
+function formatConfidence(confidence: "high" | "medium" | "low"): string {
+  const upper = confidence.toUpperCase();
+
+  switch (confidence) {
+    case "high":
+      return ui.green(upper);
+    case "medium":
+      return ui.yellow(upper);
+    case "low":
+      return ui.red(upper);
+  }
+}
+
+function formatSeverity(severity: "high" | "medium"): string {
+  return severity === "high" ? ui.red(severity.toUpperCase()) : ui.yellow(severity.toUpperCase());
+}
+
+function formatYesNo(value: boolean): string {
+  return value ? ui.green("Yes") : ui.dim("No");
+}
+
+function formatImpactLevel(score: number): string {
+  if (score >= 25) {
+    return ui.red("HIGH");
+  }
+
+  if (score >= 10) {
+    return ui.yellow("MEDIUM");
+  }
+
+  return ui.green("LOW");
+}
+
+function formatGenericCell(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+  }
+
+  return String(value);
+}
+
+function printNoiseSendersTable(
+  result: Awaited<ReturnType<typeof getNoiseSenders>>,
+): void {
+  printSection(`Noise Senders (${result.senders.length})`);
+  printSimpleTable(
+    ["SENDER", "EMAILS", "UNREAD", "SCORE", "UNSUB?"],
+    result.senders.map((sender) => [
+      truncate(sender.name || sender.email, 34),
+      String(sender.messageCount),
+      formatPercent(sender.unreadRate),
+      String(sender.noiseScore),
+      formatYesNo(sender.hasUnsubscribeLink),
+    ]),
+  );
+}
+
+function printUncategorizedSendersTable(
+  result: Awaited<ReturnType<typeof getUncategorizedSenders>>,
+): void {
+  printSection(`Uncategorized: ${result.totalEmails} emails from ${result.totalSenders} senders`);
+  console.log("");
+  printSimpleTable(
+    ["CONFIDENCE", "SENDERS", "EMAILS"],
+    [
+      ["HIGH", String(result.summary.byConfidence.high.senders), String(result.summary.byConfidence.high.emails)],
+      ["MEDIUM", String(result.summary.byConfidence.medium.senders), String(result.summary.byConfidence.medium.emails)],
+      ["LOW", String(result.summary.byConfidence.low.senders), String(result.summary.byConfidence.low.emails)],
+    ],
+  );
+
+  if (result.summary.topDomains.length > 0) {
+    console.log("");
+    printSection("Top Domains");
+    printSimpleTable(
+      ["DOMAIN", "EMAILS", "SENDERS"],
+      result.summary.topDomains.map((domain) => [
+        domain.domain,
+        String(domain.emails),
+        String(domain.senders),
+      ]),
+    );
+  }
+
+  console.log("");
+  printSection("Top Senders");
+  printSimpleTable(
+    ["SENDER", "EMAILS", "UNREAD", "CONFIDENCE", "SIGNALS"],
+    result.senders.map((sender) => [
+      truncate(sender.name && sender.name !== sender.sender ? `${sender.name} <${sender.sender}>` : sender.sender, 36),
+      String(sender.emailCount),
+      formatPercent(sender.unreadRate),
+      formatConfidence(sender.confidence),
+      truncate(sender.signals.join(", "), 40),
+    ]),
+  );
+}
+
+function printUnsubscribeSuggestionsTable(
+  result: Awaited<ReturnType<typeof getUnsubscribeSuggestions>>,
+): void {
+  printSection(`Unsubscribe Suggestions (${result.suggestions.length} candidates)`);
+  printSimpleTable(
+    ["SENDER", "EMAILS", "UNREAD", "IMPACT", "METHOD"],
+    result.suggestions.map((sender) => [
+      truncate(sender.name || sender.email, 34),
+      String(sender.allTimeMessageCount),
+      formatPercent(sender.unreadRate),
+      formatImpactLevel(sender.impactScore),
+      sender.unsubscribeMethod,
+    ]),
+  );
+}
+
+function printAnomaliesTable(
+  result: Awaited<ReturnType<typeof reviewCategorized>>,
+): void {
+  printSection(result.summary);
+
+  if (result.anomalies.length === 0) {
+    return;
+  }
+
+  console.log("");
+  printSimpleTable(
+    ["SEVERITY", "SENDER", "SUBJECT", "LABEL", "RULE"],
+    result.anomalies.map((anomaly) => [
+      formatSeverity(anomaly.severity),
+      truncate(anomaly.from, 24),
+      truncate(anomaly.subject || "(no subject)", 32),
+      truncate(anomaly.assignedLabel, 14),
+      anomaly.rule,
+    ]),
+  );
+}
+
+function printQueryResult(
+  result: Awaited<ReturnType<typeof queryEmails>>,
+): void {
+  printSection(`Query Results (${result.rows.length} of ${result.totalRows})`);
+
+  if (result.rows.length === 0) {
+    console.log("No rows matched that query.");
+    return;
+  }
+
+  const headers = Object.keys(result.rows[0] || {});
+  printSimpleTable(
+    headers.map((header) => header.toUpperCase()),
+    result.rows.map((row) => headers.map((header) => formatGenericCell(row[header]))),
+  );
+}
+
+function printThreadResult(
+  result: Awaited<ReturnType<typeof getThread>>,
+): void {
+  printSection(`Thread ${ui.dim(result.id)}`);
+  printKeyValue("messages", String(result.messages.length));
+
+  for (const message of result.messages) {
+    console.log("");
+    printSection(message.subject || "(no subject)");
+    printKeyValue("from", message.fromAddress);
+    printKeyValue("to", message.toAddresses.join(", "));
+    printKeyValue("date", new Date(message.date).toISOString());
+    printKeyValue("labels", message.labelIds.join(", ") || "-");
+    console.log("");
+    console.log(message.textPlain || message.body || message.snippet);
   }
 }
 
@@ -938,7 +1154,7 @@ function printDriftReport(result: Awaited<ReturnType<typeof detectDrift>>): void
 program
   .name("inboxctl")
   .description("CLI email management with MCP server, rules-as-code, and TUI")
-  .version("0.3.0")
+  .version("0.4.0")
   .option("--demo", "Launch the seeded demo mailbox")
   .option("--no-sync", "Launch the TUI without running the initial background sync");
 
@@ -1106,6 +1322,26 @@ program
     printKeyValue("labels", email.labelIds.join(", ") || "-");
     console.log("");
     console.log(email.textPlain || email.body || email.snippet);
+  });
+
+program
+  .command("thread <id>")
+  .description("View a full email thread")
+  .action(async (id) => {
+    const status = await loadRuntimeStatus();
+
+    if (!status.gmailReady) {
+      await requireLiveGmailReadiness("thread");
+      return;
+    }
+
+    try {
+      const thread = await getThread(id);
+      printThreadResult(thread);
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
   });
 
 program
@@ -1289,6 +1525,154 @@ program
     printHistoryTable(runs);
   });
 
+program
+  .command("query")
+  .description("Run structured analytics queries over the cached inbox")
+  .option("--group-by <dimension>", "Group by sender|domain|label|year_month|year_week|day_of_week|is_read|is_newsletter")
+  .option("--aggregate <values...>", "Aggregates to return (count, unread_count, unread_rate, newest, oldest, sender_count)")
+  .option("--from <address>", "Exact sender email")
+  .option("--from-contains <text>", "Partial sender match")
+  .option("--domain <domain>", "Exact sender domain")
+  .option("--domain-contains <text>", "Partial sender domain match")
+  .option("--subject-contains <text>", "Partial subject match")
+  .option("--since <date>", "Filter to emails on or after this ISO date")
+  .option("--before <date>", "Filter to emails on or before this ISO date")
+  .option("--read", "Only read emails")
+  .option("--unread", "Only unread emails")
+  .option("--newsletter", "Only newsletter senders")
+  .option("--without-newsletter", "Exclude newsletter senders")
+  .option("--label <name>", "Only emails with a specific label")
+  .option("--has-label", "Only emails with any user label")
+  .option("--without-label", "Only emails with no user labels")
+  .option("--has-unsubscribe", "Only emails with a List-Unsubscribe header")
+  .option("--min-sender-messages <number>", "Only senders with at least this many total emails")
+  .option("--having-count-gte <number>", "Require grouped count to be >= this value")
+  .option("--having-count-lte <number>", "Require grouped count to be <= this value")
+  .option("--having-unread-rate-gte <number>", "Require grouped unread_rate to be >= this value")
+  .option("--sort <value>", "Sort expression, for example: \"count desc\"")
+  .option("--limit <number>", "Maximum rows to return", "50")
+  .option("--json", "Output raw JSON")
+  .action(async (options) => {
+    try {
+      if (options.read && options.unread) {
+        throw new Error("Use only one of --read or --unread.");
+      }
+
+      if (options.newsletter && options.withoutNewsletter) {
+        throw new Error("Use only one of --newsletter or --without-newsletter.");
+      }
+
+      if (options.hasLabel && options.withoutLabel) {
+        throw new Error("Use only one of --has-label or --without-label.");
+      }
+
+      const result = await queryEmails({
+        filters: {
+          ...(options.from ? { from: options.from } : {}),
+          ...(options.fromContains ? { from_contains: options.fromContains } : {}),
+          ...(options.domain ? { domain: options.domain } : {}),
+          ...(options.domainContains ? { domain_contains: options.domainContains } : {}),
+          ...(options.subjectContains ? { subject_contains: options.subjectContains } : {}),
+          ...(options.since ? { date_after: options.since } : {}),
+          ...(options.before ? { date_before: options.before } : {}),
+          ...(options.read ? { is_read: true } : {}),
+          ...(options.unread ? { is_read: false } : {}),
+          ...(options.newsletter ? { is_newsletter: true } : {}),
+          ...(options.withoutNewsletter ? { is_newsletter: false } : {}),
+          ...(options.label ? { label: options.label } : {}),
+          ...(options.hasLabel ? { has_label: true } : {}),
+          ...(options.withoutLabel ? { has_label: false } : {}),
+          ...(options.hasUnsubscribe ? { has_unsubscribe: true } : {}),
+          ...(options.minSenderMessages
+            ? { min_sender_messages: parseIntegerOption(options.minSenderMessages, "min-sender-messages") }
+            : {}),
+        },
+        ...(options.groupBy ? { group_by: options.groupBy } : {}),
+        ...(options.aggregate ? { aggregates: options.aggregate } : {}),
+        ...(options.sort ? { order_by: options.sort } : {}),
+        ...(options.havingCountGte || options.havingCountLte || options.havingUnreadRateGte
+          ? {
+              having: {
+                ...(options.havingCountGte || options.havingCountLte
+                  ? {
+                      count: {
+                        ...(options.havingCountGte
+                          ? { gte: parseIntegerOption(options.havingCountGte, "having-count-gte") }
+                          : {}),
+                        ...(options.havingCountLte
+                          ? { lte: parseIntegerOption(options.havingCountLte, "having-count-lte") }
+                          : {}),
+                      },
+                    }
+                  : {}),
+                ...(options.havingUnreadRateGte
+                  ? {
+                      unread_rate: {
+                        gte: parsePercentOption(options.havingUnreadRateGte, "having-unread-rate-gte"),
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        limit: parseIntegerOption(options.limit, "limit"),
+      });
+
+      if (maybePrintJson(options.json, result)) {
+        return;
+      }
+
+      printQueryResult(result);
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("unsubscribe <sender>")
+  .description("Return an unsubscribe target for a sender and optionally archive or label existing mail")
+  .option("--no-archive", "Only return the unsubscribe link, do not archive existing mail")
+  .option("--label <name>", "Label existing emails while unsubscribing")
+  .action(async (sender, options) => {
+    if (options.archive || options.label) {
+      const status = await loadRuntimeStatus();
+
+      if (!status.gmailReady) {
+        await requireLiveGmailReadiness("unsubscribe");
+        return;
+      }
+    }
+
+    try {
+      const result = await unsubscribe({
+        senderEmail: sender,
+        alsoArchive: options.archive,
+        alsoLabel: options.label,
+      });
+
+      printSection(`Unsubscribing from ${result.sender}`);
+      printKeyValue("messages", String(result.messageCount));
+      printKeyValue("archived", String(result.archivedCount));
+      printKeyValue("labeled", String(result.labeledCount));
+      if (result.runId) {
+        printKeyValue("runId", `${ui.dim(result.runId)} (undo with: inboxctl undo ${result.runId})`);
+      }
+      printKeyValue("method", result.unsubscribeMethod);
+      console.log("");
+      console.log(result.instruction);
+      console.log("");
+      console.log(result.unsubscribeLink);
+      if (options.archive) {
+        console.log("");
+        console.log(`Tip: Create a Gmail filter to auto-archive future mail: inboxctl filters create --from ${result.sender} --archive`);
+      }
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
 const labels = program.command("labels").description("Manage Gmail labels");
 
 labels
@@ -1393,6 +1777,135 @@ stats
       }
 
       printTopSendersTable(period, senders);
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+stats
+  .command("noise")
+  .description("High-noise senders ranked by noise score")
+  .option("--top <number>", "Number of senders", "20")
+  .option("--sort <mode>", "Sort by noise_score|all_time_noise_score|message_count|unread_rate", "noise_score")
+  .option("--min-score <number>", "Minimum noise score", "5")
+  .option("--active-days <number>", "Only consider recent activity within this many days", "90")
+  .option("--json", "Output raw JSON")
+  .action(async (options) => {
+    try {
+      const result = await getNoiseSenders({
+        limit: parseIntegerOption(options.top, "top"),
+        sortBy: options.sort,
+        minNoiseScore: Number(options.minScore),
+        activeDays: parseIntegerOption(options.activeDays, "active-days"),
+      });
+
+      if (maybePrintJson(options.json, result)) {
+        return;
+      }
+
+      if (result.senders.length === 0) {
+        console.log("No noisy senders matched that filter.");
+        return;
+      }
+
+      printNoiseSendersTable(result);
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+stats
+  .command("uncategorized")
+  .description("Summarize uncategorized emails by sender")
+  .option("--top <number>", "Number of senders", "20")
+  .option("--confidence <level>", "Filter by confidence: high|medium|low")
+  .option("--min-emails <number>", "Minimum uncategorized emails per sender", "1")
+  .option("--since <date>", "Only include uncategorized emails on or after this ISO date")
+  .option("--sort <mode>", "Sort by email_count|newest|unread_rate", "email_count")
+  .option("--json", "Output raw JSON")
+  .action(async (options) => {
+    try {
+      const result = await getUncategorizedSenders({
+        limit: parseIntegerOption(options.top, "top"),
+        confidence: options.confidence,
+        minEmails: parseIntegerOption(options.minEmails, "min-emails"),
+        since: options.since,
+        sortBy: options.sort,
+      });
+
+      if (maybePrintJson(options.json, result)) {
+        return;
+      }
+
+      if (result.totalSenders === 0) {
+        console.log("No uncategorized senders matched that filter.");
+        return;
+      }
+
+      printUncategorizedSendersTable(result);
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+stats
+  .command("unsubscribe")
+  .description("Rank unsubscribe candidates by impact")
+  .option("--top <number>", "Number of senders", "20")
+  .option("--min-emails <number>", "Minimum emails from a sender", "5")
+  .option("--unread-only-senders", "Only show senders where every email is unread")
+  .option("--json", "Output raw JSON")
+  .action(async (options) => {
+    try {
+      const result = await getUnsubscribeSuggestions({
+        limit: parseIntegerOption(options.top, "top"),
+        minMessages: parseIntegerOption(options.minEmails, "min-emails"),
+        unreadOnlySenders: options.unreadOnlySenders,
+      });
+
+      if (maybePrintJson(options.json, result)) {
+        return;
+      }
+
+      if (result.suggestions.length === 0) {
+        console.log("No unsubscribe suggestions matched that filter.");
+        return;
+      }
+
+      printUnsubscribeSuggestionsTable(result);
+      console.log("");
+      console.log("Run `inboxctl unsubscribe <sender>` to process a specific sender.");
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+stats
+  .command("anomalies")
+  .description("Review recently categorized emails for potential misclassifications")
+  .option("--since <date>", "Only review items on or after this ISO date")
+  .option("--limit <number>", "Maximum anomalies to return", "20")
+  .option("--json", "Output raw JSON")
+  .action(async (options) => {
+    try {
+      const result = await reviewCategorized({
+        ...(options.since ? { since: options.since } : {}),
+        limit: parseIntegerOption(options.limit, "limit"),
+      });
+
+      if (maybePrintJson(options.json, result)) {
+        return;
+      }
+
+      printAnomaliesTable(result);
+      if (result.anomalies.length > 0) {
+        console.log("");
+        console.log("Undo a run with `inboxctl undo <run-id>`.");
+      }
     } catch (error) {
       console.log(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

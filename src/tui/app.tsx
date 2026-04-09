@@ -26,7 +26,10 @@ import {
 } from "../core/gmail/modify.js";
 import { getLabelDistribution } from "../core/stats/labels.js";
 import { getNewsletters } from "../core/stats/newsletters.js";
+import { getNoiseSenders } from "../core/stats/noise.js";
 import { getTopSenders } from "../core/stats/sender.js";
+import { getUncategorizedSenders } from "../core/stats/uncategorized-senders.js";
+import { getUnsubscribeSuggestions } from "../core/stats/unsubscribe.js";
 import { getInboxOverview, getVolumeByPeriod } from "../core/stats/volume.js";
 import {
   deployAllRules,
@@ -45,7 +48,7 @@ import {
 } from "../core/sync/sync.js";
 
 type Screen = "inbox" | "email" | "stats" | "rules" | "search";
-type StatsTab = "senders" | "labels" | "newsletters";
+type StatsTab = "senders" | "labels" | "newsletters" | "noise" | "uncategorized" | "unsubscribe";
 type RulesFocus = "rules" | "history";
 type SearchFocus = "input" | "results";
 type FlashTone = "info" | "success" | "error";
@@ -304,7 +307,7 @@ function getScreenGuide(screen: Screen, focus?: RulesFocus | SearchFocus): strin
     case "email":
       return "Esc back  •  j/k scroll  •  a archive  •  l label  •  r toggle read";
     case "stats":
-      return "Esc back  •  s senders  •  l labels  •  n newsletters";
+      return "Esc back  •  s senders  •  l labels  •  n newsletters  •  o noise  •  c uncategorized  •  u unsubscribe";
     case "rules":
       return `Esc back  •  Tab switch ${focus === "history" ? "history" : "rules"} focus  •  d deploy  •  e toggle  •  r dry-run  •  R apply  •  u undo`;
     case "search":
@@ -664,6 +667,9 @@ export function App({ initialSync = true }: AppProps) {
   const [statsSenders, setStatsSenders] = useState<Awaited<ReturnType<typeof getTopSenders>>>([]);
   const [statsLabels, setStatsLabels] = useState<Awaited<ReturnType<typeof getLabelDistribution>>>([]);
   const [statsNewsletters, setStatsNewsletters] = useState<Awaited<ReturnType<typeof getNewsletters>>>([]);
+  const [statsNoise, setStatsNoise] = useState<Awaited<ReturnType<typeof getNoiseSenders>>["senders"]>([]);
+  const [statsUncategorized, setStatsUncategorized] = useState<Awaited<ReturnType<typeof getUncategorizedSenders>> | null>(null);
+  const [statsUnsubscribe, setStatsUnsubscribe] = useState<Awaited<ReturnType<typeof getUnsubscribeSuggestions>>["suggestions"]>([]);
   const [statsVolume, setStatsVolume] = useState<Awaited<ReturnType<typeof getVolumeByPeriod>>>([]);
 
   const [rulesLoading, setRulesLoading] = useState(false);
@@ -732,11 +738,14 @@ export function App({ initialSync = true }: AppProps) {
     setStatsLoading(true);
 
     try {
-      const [overview, senders, labels, newsletters, volume] = await Promise.all([
+      const [overview, senders, labels, newsletters, noise, uncategorized, unsubscribe, volume] = await Promise.all([
         getInboxOverview(),
         getTopSenders({ limit: 10 }),
         getLabelDistribution(),
         getNewsletters({ minMessages: 1 }),
+        getNoiseSenders({ limit: 10 }),
+        getUncategorizedSenders({ limit: 10 }),
+        getUnsubscribeSuggestions({ limit: 10 }),
         getVolumeByPeriod("day", { start: Date.now() - 30 * 24 * 60 * 60 * 1000, end: Date.now() }),
       ]);
 
@@ -744,6 +753,9 @@ export function App({ initialSync = true }: AppProps) {
       setStatsSenders(senders);
       setStatsLabels(labels.slice(0, 10));
       setStatsNewsletters(newsletters.slice(0, 10));
+      setStatsNoise(noise.senders);
+      setStatsUncategorized(uncategorized);
+      setStatsUnsubscribe(unsubscribe.suggestions);
       setStatsVolume(volume.slice(-7));
     } catch (error) {
       pushFlash("error", error instanceof Error ? error.message : String(error));
@@ -1253,6 +1265,21 @@ export function App({ initialSync = true }: AppProps) {
 
       if (input === "n") {
         setStatsTab("newsletters");
+        return;
+      }
+
+      if (input === "o") {
+        setStatsTab("noise");
+        return;
+      }
+
+      if (input === "c") {
+        setStatsTab("uncategorized");
+        return;
+      }
+
+      if (input === "u") {
+        setStatsTab("unsubscribe");
       }
       return;
     }
@@ -1513,7 +1540,7 @@ export function App({ initialSync = true }: AppProps) {
       {screen === "stats" ? (
         <Panel
           title="Stats Dashboard"
-          subtitle="s senders  •  l labels  •  n newsletters  •  Esc back"
+          subtitle="s senders  •  l labels  •  n newsletters  •  o noise  •  c uncategorized  •  u unsubscribe  •  Esc back"
           accent="yellow"
         >
           {statsLoading ? (
@@ -1542,6 +1569,12 @@ export function App({ initialSync = true }: AppProps) {
                 <Text color={statsTab === "labels" ? "cyan" : "gray"}>[Labels]</Text>
                 <Text> </Text>
                 <Text color={statsTab === "newsletters" ? "cyan" : "gray"}>[Newsletters]</Text>
+                <Text> </Text>
+                <Text color={statsTab === "noise" ? "cyan" : "gray"}>[Noise]</Text>
+                <Text> </Text>
+                <Text color={statsTab === "uncategorized" ? "cyan" : "gray"}>[Uncategorized]</Text>
+                <Text> </Text>
+                <Text color={statsTab === "unsubscribe" ? "cyan" : "gray"}>[Unsubscribe]</Text>
               </Box>
               {statsTab === "senders" ? (
                 <Table
@@ -1578,6 +1611,58 @@ export function App({ initialSync = true }: AppProps) {
                     newsletter.status,
                   ])}
                   emptyMessage="No newsletters detected."
+                />
+              ) : null}
+              {statsTab === "noise" ? (
+                <Table
+                  title="Noise Senders"
+                  headers={["SENDER", "EMAILS", "UNREAD%", "SCORE", "UNSUB"]}
+                  rows={statsNoise.map((sender) => [
+                    truncate(sender.name || sender.email, 24),
+                    String(sender.messageCount),
+                    formatPercent(sender.unreadRate),
+                    String(sender.noiseScore),
+                    sender.hasUnsubscribeLink ? "Yes" : "No",
+                  ])}
+                  emptyMessage="No noisy senders detected."
+                />
+              ) : null}
+              {statsTab === "uncategorized" ? (
+                <>
+                  <Box marginTop={1} flexDirection="column">
+                    <Text>
+                      Uncategorized: {statsUncategorized?.totalEmails ?? 0} emails from {statsUncategorized?.totalSenders ?? 0} senders
+                    </Text>
+                    <Text color="gray">
+                      High {statsUncategorized?.summary.byConfidence.high.senders ?? 0}  •  Medium {statsUncategorized?.summary.byConfidence.medium.senders ?? 0}  •  Low {statsUncategorized?.summary.byConfidence.low.senders ?? 0}
+                    </Text>
+                  </Box>
+                  <Table
+                    title="Uncategorized Senders"
+                    headers={["SENDER", "EMAILS", "UNREAD%", "CONF", "SIGNALS"]}
+                    rows={(statsUncategorized?.senders || []).map((sender) => [
+                      truncate(sender.name || sender.sender, 20),
+                      String(sender.emailCount),
+                      formatPercent(sender.unreadRate),
+                      sender.confidence.toUpperCase(),
+                      truncate(sender.signals.join(","), 22),
+                    ])}
+                    emptyMessage="No uncategorized senders detected."
+                  />
+                </>
+              ) : null}
+              {statsTab === "unsubscribe" ? (
+                <Table
+                  title="Unsubscribe Candidates"
+                  headers={["SENDER", "EMAILS", "UNREAD%", "IMPACT", "METHOD"]}
+                  rows={statsUnsubscribe.map((sender) => [
+                    truncate(sender.name || sender.email, 24),
+                    String(sender.allTimeMessageCount),
+                    formatPercent(sender.unreadRate),
+                    String(sender.impactScore),
+                    sender.unsubscribeMethod,
+                  ])}
+                  emptyMessage="No unsubscribe candidates detected."
                 />
               ) : null}
               <Table

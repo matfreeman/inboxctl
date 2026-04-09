@@ -138,6 +138,74 @@ export function isLikelyAutomatedSenderAddress(sender: string): boolean {
   return AUTOMATED_ADDRESS_MARKERS.some((marker) => normalized.includes(marker));
 }
 
+export interface ConfidenceRowInput {
+  sender: string | null;
+  totalFromSender: number | null;
+  detectionReason: string | null;
+  listUnsubscribe: string | null;
+}
+
+export interface ConfidenceResult {
+  confidence: "high" | "medium" | "low";
+  signals: string[];
+}
+
+export function computeConfidence(row: ConfidenceRowInput): ConfidenceResult {
+  const signals: string[] = [];
+  let score = 0;
+  const hasDefinitiveNewsletterSignal =
+    Boolean(row.listUnsubscribe && row.listUnsubscribe.trim()) ||
+    Boolean(row.detectionReason?.includes("list_unsubscribe"));
+
+  if (row.listUnsubscribe && row.listUnsubscribe.trim()) {
+    signals.push("list_unsubscribe_header");
+    score += 3;
+  }
+
+  if (row.detectionReason?.includes("list_unsubscribe")) {
+    signals.push("newsletter_list_header");
+    score += 2;
+  }
+
+  if ((row.totalFromSender ?? 0) >= 20) {
+    signals.push("high_volume_sender");
+    score += 2;
+  } else if ((row.totalFromSender ?? 0) >= 5) {
+    signals.push("moderate_volume_sender");
+    score += 1;
+  }
+
+  if (row.detectionReason?.includes("known_sender_pattern")) {
+    signals.push("automated_sender_pattern");
+    score += 1;
+  }
+
+  if (row.detectionReason?.includes("bulk_sender_pattern")) {
+    signals.push("bulk_sender_pattern");
+    score += 1;
+  }
+
+  if ((row.totalFromSender ?? 0) <= 2 && !hasDefinitiveNewsletterSignal) {
+    signals.push("rare_sender");
+    score -= 3;
+  }
+
+  if (!row.detectionReason) {
+    signals.push("no_newsletter_signals");
+    score -= 2;
+  }
+
+  if (!row.detectionReason && !isLikelyAutomatedSenderAddress(row.sender || "")) {
+    signals.push("personal_sender_address");
+    score -= 2;
+  }
+
+  return {
+    confidence: score >= 3 ? "high" : score >= 0 ? "medium" : "low",
+    signals,
+  };
+}
+
 export function startOfLocalDay(now: number = Date.now()): number {
   const date = new Date(now);
   date.setHours(0, 0, 0, 0);

@@ -159,6 +159,10 @@ describe("createMcpServer", () => {
       limit: 500,
       offset: 0,
     });
+    const uncategorizedSendersResult = await internals._registeredTools.get_uncategorized_senders.handler({
+      limit: 100,
+      offset: 0,
+    });
     const reviewCategorizedResult = await internals._registeredTools.review_categorized.handler({});
     const queryEmailsResult = await internals._registeredTools.query_emails.handler({
       filters: {
@@ -198,6 +202,7 @@ describe("createMcpServer", () => {
 
     expect(internals._registeredTools.get_newsletter_senders).toBeDefined();
     expect(internals._registeredTools.get_uncategorized_emails).toBeDefined();
+    expect(internals._registeredTools.get_uncategorized_senders).toBeDefined();
     expect(internals._registeredTools.review_categorized).toBeDefined();
     expect(internals._registeredTools.query_emails).toBeDefined();
     expect(internals._registeredTools.get_noise_senders).toBeDefined();
@@ -219,6 +224,23 @@ describe("createMcpServer", () => {
         emails: Array<{ senderContext: { confidence: string; signals: string[] } }>;
       }).emails[0]?.senderContext,
     ).toMatchObject({
+      confidence: "high",
+    });
+    expect(
+      (uncategorizedSendersResult.structuredContent?.result as {
+        totalSenders: number;
+        senders: Array<{ sender: string; emailIds: string[]; confidence: string }>;
+      }),
+    ).toMatchObject({
+      totalSenders: 2,
+    });
+    expect(
+      (uncategorizedSendersResult.structuredContent?.result as {
+        senders: Array<{ sender: string; emailIds: string[]; confidence: string }>;
+      }).senders[0],
+    ).toMatchObject({
+      sender: "newsletter@example.com",
+      emailIds: ["msg-1"],
       confidence: "high",
     });
     expect(
@@ -283,7 +305,9 @@ describe("createMcpServer", () => {
     expect(triagePrompt.messages[0]?.content.text).toContain("batch_apply_actions");
     expect(triagePrompt.messages[0]?.content.text).toContain("unsubscribe");
     expect(triagePrompt.messages[0]?.content.text).toContain("confidence: \"low\"");
+    expect(suggestRulesPrompt.messages[0]?.content.text).toContain("query_emails");
     expect(suggestRulesPrompt.messages[0]?.content.text).toContain("name: kebab-case-name");
+    expect(categorizePrompt.messages[0]?.content.text).toContain("get_uncategorized_senders");
     expect(categorizePrompt.messages[0]?.content.text).toContain("get_uncategorized_emails");
     expect(categorizePrompt.messages[0]?.content.text).toContain("get_unsubscribe_suggestions");
     expect(categorizePrompt.messages[0]?.content.text).toContain("inboxctl/Review");

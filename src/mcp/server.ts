@@ -31,6 +31,7 @@ import {
 } from "../core/stats/query.js";
 import { getSenderStats, getTopSenders } from "../core/stats/sender.js";
 import { getUncategorizedEmails } from "../core/stats/uncategorized.js";
+import { getUncategorizedSenders } from "../core/stats/uncategorized-senders.js";
 import { getUnsubscribeSuggestions } from "../core/stats/unsubscribe.js";
 import { getInboxOverview, getVolumeByPeriod } from "../core/stats/volume.js";
 import { getExecutionHistory, getExecutionStats } from "../core/rules/history.js";
@@ -52,7 +53,7 @@ import { getRecentEmails } from "../core/sync/cache.js";
 import { fullSync, getSyncStatus, incrementalSync } from "../core/sync/sync.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MCP_VERSION = "0.3.0";
+const MCP_VERSION = "0.4.0";
 
 export const MCP_TOOLS = [
   "search_emails",
@@ -72,6 +73,7 @@ export const MCP_TOOLS = [
   "get_sender_stats",
   "get_newsletter_senders",
   "get_uncategorized_emails",
+  "get_uncategorized_senders",
   "review_categorized",
   "query_emails",
   "get_noise_senders",
@@ -641,6 +643,39 @@ export async function createMcpServer(): Promise<{
   );
 
   server.registerTool(
+    "get_uncategorized_senders",
+    {
+      description: "Return uncategorized emails grouped by sender so AI clients can categorize at sender-level instead of one email at a time.",
+      inputSchema: {
+        limit: z.number().int().positive().max(500).optional()
+          .describe("Max senders per page. Default 100."),
+        offset: z.number().int().min(0).optional()
+          .describe("Number of senders to skip for pagination."),
+        min_emails: z.number().int().positive().optional()
+          .describe("Only include senders with at least this many uncategorized emails."),
+        confidence: z.enum(["high", "medium", "low"]).optional()
+          .describe("Filter senders by the confidence score inferred from sender signals."),
+        since: z.string().min(1).optional()
+          .describe("Only include uncategorized emails on or after this ISO date."),
+        sort_by: z.enum(["email_count", "newest", "unread_rate"]).optional()
+          .describe("Sort senders by email volume, most recent email, or unread rate."),
+      },
+      annotations: {
+        readOnlyHint: true,
+      },
+    },
+    toolHandler(async ({ limit, offset, min_emails, confidence, since, sort_by }) =>
+      getUncategorizedSenders({
+        limit,
+        offset,
+        minEmails: min_emails,
+        confidence,
+        since,
+        sortBy: sort_by,
+      })),
+  );
+
+  server.registerTool(
     "review_categorized",
     {
       description: "Scan recently categorized emails for anomalies that suggest a misclassification or over-aggressive archive.",
@@ -978,8 +1013,14 @@ export async function createMcpServer(): Promise<{
         [
           "First, inspect these data sources:",
           "- `rules://deployed` — existing rules (avoid duplicates)",
+          "- `query_emails` — find high-volume domains, unread-heavy clusters, and labeling opportunities",
           "- `get_noise_senders` — high-volume low-read senders",
           "- `get_newsletter_senders` — detected newsletters and mailing lists",
+          "",
+          "Useful `query_emails` patterns before drafting rules:",
+          "- `group_by: \"domain\"`, `aggregates: [\"count\", \"unread_rate\"]`, `having: { count: { gte: 20 } }`",
+          "- `group_by: \"domain\"`, `aggregates: [\"count\", \"unread_rate\"]`, `having: { unread_rate: { gte: 80 } }`",
+          "- Cross-check the results against `list_rules` and `list_filters` before proposing new automation.",
           "",
           "For each recommendation, generate complete YAML using this schema:",
           "",
@@ -1061,14 +1102,16 @@ export async function createMcpServer(): Promise<{
         "Categorise uncategorised emails in the user's inbox.",
         [
           "Step 1 — Gather data:",
-          "  Use `get_uncategorized_emails` (start with limit 100).",
-          "  If totalUncategorized is more than 500, ask whether to process the recent batch or paginate through the full backlog.",
+          "  Use `get_uncategorized_senders` first (start with limit 100).",
+          "  This groups uncategorized emails by sender and is the primary way to process large inbox backlogs efficiently.",
+          "  Use `get_uncategorized_emails` only when you need to inspect specific emails from an ambiguous sender.",
+          "  If totalSenders is more than 500, ask whether to process the recent batch or paginate through the full backlog.",
           "  Use `get_noise_senders` for sender context.",
           "  Use `get_unsubscribe_suggestions` for likely unsubscribe candidates.",
           "  Use `get_labels` to see what labels already exist.",
           "  Use `rules://deployed` to avoid duplicating existing automation.",
           "",
-          "Step 2 — Assign each email a category:",
+          "Step 2 — Assign each sender a category:",
           "  Receipts — purchase confirmations, invoices, payment notifications",
           "  Shipping — delivery tracking, dispatch notices, shipping updates",
           "  Newsletters — editorial content, digests, weekly roundups",
@@ -1080,28 +1123,29 @@ export async function createMcpServer(): Promise<{
           "  Important — personal or work email requiring attention",
           "",
           "Step 3 — Present the categorisation plan:",
-          "  Group emails by assigned category.",
-          "  For each group show: count, senders involved, sample subjects.",
+          "  Group senders by assigned category.",
+          "  For each group show: sender count, total emails affected, senders involved, sample subjects.",
           "  Note confidence level: HIGH (clear pattern), MEDIUM (reasonable guess), LOW (uncertain).",
-          "  Flag any LOW confidence items for the user to decide.",
+          "  Flag any LOW confidence senders for the user to decide.",
           "  Present the confidence breakdown: X HIGH (auto-apply), Y MEDIUM (label only), Z LOW (review queue).",
-          "  If any LOW confidence emails are present, note why they were flagged from the `signals` array.",
+          "  If any LOW confidence senders are present, note why they were flagged from the `signals` array.",
           "",
           "Step 3.5 — Apply confidence gating:",
           "  HIGH confidence — safe to apply directly (label, mark_read, archive as appropriate).",
           "  MEDIUM confidence — apply the category label only. Do not archive. Keep the email visible in the inbox.",
           "  LOW confidence — apply only the label `inboxctl/Review`. Do not archive or mark read.",
-          "  These emails need human review before any further action.",
+          "  These senders need human review before any further action.",
           "",
           "Step 4 — Apply with user approval:",
           "  Create labels for any new categories (use `create_label`).",
-          "  Use `batch_apply_actions` to apply labels in one call.",
+          "  Use `batch_apply_actions` to apply labels in one call, grouping by action set and reusing each sender's `emailIds`.",
           "  For Newsletters and Promotions with high unread rates, suggest mark_read + archive or `unsubscribe` when a link is available.",
           "  For Receipts/Shipping/Notifications, suggest mark_read only (keep in inbox).",
           "  For Important, do not mark read or archive.",
           "",
           "Step 5 — Paginate if needed:",
           "  If hasMore is true, ask whether to continue with the next page using offset.",
+          "  Each new page is a new set of senders, not more emails from the same senders.",
           "  Reuse the same sender categorisations on later pages instead of re-evaluating known senders.",
           "",
           "Step 6 — Suggest ongoing rules:",

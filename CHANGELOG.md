@@ -14,6 +14,19 @@ The format follows Keep a Changelog and the project uses Semantic Versioning.
 
 ### Security
 
+## [0.4.0] - 2026-04-09
+
+### Added
+
+- Added `get_uncategorized_senders`, a sender-level MCP workflow for categorizing large uncategorized inboxes without pulling every email into agent context.
+- Added CLI coverage for the newer analytics workflows with `stats noise`, `stats uncategorized`, `stats unsubscribe`, `stats anomalies`, `query`, `thread`, and `unsubscribe`.
+- Added TUI stats tabs for noise senders, uncategorized senders, and unsubscribe candidates.
+
+### Changed
+
+- Updated MCP prompts so `categorize-emails` uses sender-level uncategorized grouping first and `suggest-rules` points agents at `query_emails` for pattern discovery.
+- Updated the published README to reflect the current MCP contract and the expanded CLI/TUI surface.
+
 ## [0.3.0] - 2026-04-08
 
 ### Added

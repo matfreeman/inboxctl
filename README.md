@@ -8,7 +8,7 @@
 
 Most email tools put the intelligence inside the app. `inboxctl` does the opposite: it is the infrastructure layer, and your AI agent is the brain.
 
-Connect any MCP client, including Claude Desktop, Claude Code, or another MCP-compatible agent, and it gets structured access to search your inbox, review sender patterns, detect newsletter noise, triage unread mail, apply labels, archive, create Gmail filters, and manage rules. `inboxctl` handles the Gmail plumbing, audit trail, and undo path.
+Connect any MCP client, including Claude Desktop, Claude Code, or another MCP-compatible agent, and it gets structured access to search your inbox, review sender patterns, analyze uncategorized mail at sender-level, detect newsletter noise, rank unsubscribe opportunities, review categorization anomalies, run structured inbox queries, apply labels, archive, create Gmail filters, and manage rules. `inboxctl` handles the Gmail plumbing, audit trail, and undo path.
 
 The CLI and TUI ship alongside MCP so you can always inspect what an agent did, undo it, or run the same work manually.
 
@@ -18,9 +18,9 @@ Emails are never deleted. The tool can label, archive, mark read, and forward, b
 
 | | Count | Examples |
 |---|---|---|
-| **Tools** | 25 | `search_emails`, `archive_emails`, `label_emails`, `mark_read`, `get_top_senders`, `get_newsletter_senders`, `deploy_rule`, `run_rule`, `create_filter`, `undo_run` |
-| **Resources** | 6 | `inbox://recent`, `inbox://summary`, `rules://deployed`, `rules://history`, `stats://senders`, `stats://overview` |
-| **Prompts** | 5 | `summarize-inbox`, `review-senders`, `find-newsletters`, `suggest-rules`, `triage-inbox` |
+| **Tools** | 32 | `search_emails`, `get_uncategorized_senders`, `batch_apply_actions`, `query_emails`, `get_noise_senders`, `get_unsubscribe_suggestions`, `deploy_rule`, `create_filter`, `undo_run`, `review_categorized` |
+| **Resources** | 8 | `inbox://recent`, `inbox://summary`, `inbox://action-log`, `schema://query-fields`, `rules://deployed`, `rules://history`, `stats://senders`, `stats://overview` |
+| **Prompts** | 6 | `summarize-inbox`, `review-senders`, `find-newsletters`, `suggest-rules`, `triage-inbox`, `categorize-emails` |
 
 An agent can read your inbox summary, review your noisiest senders, suggest a YAML rule to handle them, deploy it in dry-run, show you the results, and apply it, all through MCP calls.
 
@@ -104,11 +104,13 @@ inboxctl demo               # launch the seeded demo mailbox
 ## Features
 
 - **MCP server** with the full feature set exposed as tools, resources, and prompts.
+- **Context-efficient sender workflows** with `get_uncategorized_senders` for large inbox categorization without loading every email into an agent context window.
 - **Rules as code** in YAML, with deploy, dry-run, apply, drift detection, audit logging, and undo.
-- **Local-first analytics** on top senders, unread rates, newsletter detection, labels, and volume trends.
+- **Local-first analytics** on top senders, unread rates, newsletter detection, uncategorized senders, noise scoring, unsubscribe impact, anomaly review, labels, and volume trends.
+- **Structured inbox queries** for fixed filters, aggregations, and grouping across the local cache.
 - **Gmail filter management** for always-on server-side rules on future incoming mail.
 - **Full audit trail** with before/after state snapshots for reversible actions.
-- **Interactive TUI** for inbox triage, email detail, stats, rules, and search.
+- **Interactive TUI** for inbox triage, email detail, expanded stats dashboards, rules, and search.
 - **Guided setup wizard** for Google Cloud and local OAuth configuration.
 - **Demo mode** with realistic seeded data for screenshots, recordings, and safe exploration.
 
@@ -151,6 +153,7 @@ inboxctl sync --full
 inboxctl inbox -n 20
 inboxctl search "from:github.com"
 inboxctl email <id>
+inboxctl thread <thread-id>
 
 # actions
 inboxctl archive <id>
@@ -164,8 +167,14 @@ inboxctl history
 # analytics
 inboxctl stats
 inboxctl stats senders --top 20
+inboxctl stats noise --top 20
 inboxctl stats newsletters
+inboxctl stats uncategorized --confidence high
+inboxctl stats unsubscribe --top 20
+inboxctl stats anomalies --since 2026-04-01
 inboxctl stats volume --period week
+inboxctl query --group-by domain --aggregate count unread_rate --sort "count desc"
+inboxctl unsubscribe newsletter@example.com --no-archive
 
 # rules
 inboxctl rules deploy
