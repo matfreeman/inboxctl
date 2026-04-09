@@ -14,6 +14,12 @@ The format follows Keep a Changelog and the project uses Semantic Versioning.
 
 ### Security
 
+## [0.7.1] - 2026-04-09
+
+### Fixed
+
+- Aligned the package, CLI, and MCP reported versions for the `0.7.1` release.
+
 ## [0.7.0] - 2026-04-09
 
 ### Added

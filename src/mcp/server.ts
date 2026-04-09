@@ -54,7 +54,7 @@ import { getRecentEmails } from "../core/sync/cache.js";
 import { fullSync, getSyncStatus, incrementalSync } from "../core/sync/sync.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MCP_VERSION = "0.7.0";
+const MCP_VERSION = "0.7.1";
 
 export const MCP_TOOLS = [
   "search_emails",
