@@ -163,6 +163,11 @@ describe("createMcpServer", () => {
       limit: 100,
       offset: 0,
     });
+    const uncategorizedSendersWithIdsResult = await internals._registeredTools.get_uncategorized_senders.handler({
+      limit: 100,
+      offset: 0,
+      include_email_ids: true,
+    });
     const reviewCategorizedResult = await internals._registeredTools.review_categorized.handler({});
     const queryEmailsResult = await internals._registeredTools.query_emails.handler({
       filters: {
@@ -209,6 +214,8 @@ describe("createMcpServer", () => {
     expect(internals._registeredTools.get_unsubscribe_suggestions).toBeDefined();
     expect(internals._registeredTools.unsubscribe).toBeDefined();
     expect(internals._registeredTools.batch_apply_actions).toBeDefined();
+    expect(internals._registeredTools.undo_filters).toBeDefined();
+    expect(internals._registeredTools.cleanup_labels).toBeDefined();
     expect(internals._registeredResources["stats://overview"]).toBeDefined();
     expect(internals._registeredResources["inbox://action-log"]).toBeDefined();
     expect(internals._registeredResources["schema://query-fields"]).toBeDefined();
@@ -229,13 +236,26 @@ describe("createMcpServer", () => {
     expect(
       (uncategorizedSendersResult.structuredContent?.result as {
         totalSenders: number;
-        senders: Array<{ sender: string; emailIds: string[]; confidence: string }>;
+        senders: Array<{ sender: string; confidence: string }>;
       }),
     ).toMatchObject({
       totalSenders: 2,
     });
     expect(
       (uncategorizedSendersResult.structuredContent?.result as {
+        senders: Array<{ sender: string; confidence: string }>;
+      }).senders[0],
+    ).toMatchObject({
+      sender: "newsletter@example.com",
+      confidence: "high",
+    });
+    expect(
+      (uncategorizedSendersResult.structuredContent?.result as {
+        senders: Array<Record<string, unknown>>;
+      }).senders[0],
+    ).not.toHaveProperty("emailIds");
+    expect(
+      (uncategorizedSendersWithIdsResult.structuredContent?.result as {
         senders: Array<{ sender: string; emailIds: string[]; confidence: string }>;
       }).senders[0],
     ).toMatchObject({
@@ -308,6 +328,7 @@ describe("createMcpServer", () => {
     expect(suggestRulesPrompt.messages[0]?.content.text).toContain("query_emails");
     expect(suggestRulesPrompt.messages[0]?.content.text).toContain("name: kebab-case-name");
     expect(categorizePrompt.messages[0]?.content.text).toContain("get_uncategorized_senders");
+    expect(categorizePrompt.messages[0]?.content.text).toContain("include_email_ids");
     expect(categorizePrompt.messages[0]?.content.text).toContain("get_uncategorized_emails");
     expect(categorizePrompt.messages[0]?.content.text).toContain("get_unsubscribe_suggestions");
     expect(categorizePrompt.messages[0]?.content.text).toContain("inboxctl/Review");

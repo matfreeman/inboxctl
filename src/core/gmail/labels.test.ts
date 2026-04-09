@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../../config.js";
-import { createLabel, getLabelId, listLabels, syncLabels } from "./labels.js";
+import { getSqlite } from "../db/client.js";
+import { cleanupEmptyLabels, createLabel, getLabelId, listLabels, syncLabels } from "./labels.js";
 import type { GmailTransport } from "./transport.js";
 
 const tempDirs: string[] = [];
@@ -70,6 +71,7 @@ function makeTransport(overrides: Partial<GmailTransport> = {}): GmailTransport 
     threadsTotal: 0,
     threadsUnread: 0,
   }));
+  const deleteLabel = vi.fn(async () => undefined);
   const batchModifyMessages = vi.fn(async () => undefined);
   const modifyMessage = vi.fn(async () => ({ id: "msg-1", labelIds: ["INBOX"] }));
   const sendMessage = vi.fn(async () => ({ id: "sent-1" }));
@@ -84,6 +86,7 @@ function makeTransport(overrides: Partial<GmailTransport> = {}): GmailTransport 
     listLabels,
     getLabel,
     createLabel,
+    deleteLabel,
     batchModifyMessages,
     modifyMessage,
     sendMessage,
@@ -93,6 +96,36 @@ function makeTransport(overrides: Partial<GmailTransport> = {}): GmailTransport 
     listHistory,
     ...overrides,
   } as unknown as GmailTransport;
+}
+
+function insertEmail(config: Config, id: string, labelIds: string[]): void {
+  const sqlite = getSqlite(config.dbPath);
+  sqlite
+    .prepare(
+      `
+      INSERT INTO emails (
+        id, thread_id, from_address, from_name, to_addresses, subject, snippet, date,
+        is_read, is_starred, label_ids, size_estimate, has_attachments, list_unsubscribe, synced_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    )
+    .run(
+      id,
+      `thread-${id}`,
+      "sender@example.com",
+      "Sender",
+      JSON.stringify(["user@example.com"]),
+      "Subject",
+      "Snippet",
+      Date.now(),
+      labelIds.includes("UNREAD") ? 0 : 1,
+      0,
+      JSON.stringify(labelIds),
+      1024,
+      0,
+      null,
+      Date.now(),
+    );
 }
 
 describe("gmail labels", () => {
@@ -137,5 +170,71 @@ describe("gmail labels", () => {
       color: undefined,
     });
     expect(await getLabelId("receipts", { config, transport })).toBe("Label_NEW");
+  });
+
+  it("deletes empty inboxctl-managed labels and skips non-empty or unmanaged ones", async () => {
+    const config = makeConfig();
+    const transport = makeTransport({
+      listLabels: vi.fn(async () => ({
+        labels: [
+          { id: "Label_EMPTY", name: "inboxctl/Empty", type: "user" },
+          { id: "Label_USED", name: "inboxctl/Used", type: "user" },
+          { id: "Label_OTHER", name: "Receipts", type: "user" },
+        ],
+      })),
+      getLabel: vi.fn(async (id: string) => ({
+        id,
+        name:
+          id === "Label_EMPTY"
+            ? "inboxctl/Empty"
+            : id === "Label_USED"
+              ? "inboxctl/Used"
+              : "Receipts",
+        type: "user",
+        messagesTotal: 0,
+        messagesUnread: 0,
+        threadsTotal: 0,
+        threadsUnread: 0,
+      })),
+    });
+
+    insertEmail(config, "msg-1", ["INBOX", "Label_USED"]);
+
+    const result = await cleanupEmptyLabels({ config, transport });
+
+    expect(result).toEqual({
+      deletedLabels: ["inboxctl/Empty"],
+      skippedLabels: ["inboxctl/Used", "Receipts"],
+      dryRun: false,
+    });
+    expect(transport.deleteLabel).toHaveBeenCalledTimes(1);
+    expect(transport.deleteLabel).toHaveBeenCalledWith("Label_EMPTY");
+  });
+
+  it("supports dry run label cleanup", async () => {
+    const config = makeConfig();
+    const transport = makeTransport({
+      listLabels: vi.fn(async () => ({
+        labels: [{ id: "Label_EMPTY", name: "inboxctl/Empty", type: "user" }],
+      })),
+      getLabel: vi.fn(async () => ({
+        id: "Label_EMPTY",
+        name: "inboxctl/Empty",
+        type: "user",
+        messagesTotal: 0,
+        messagesUnread: 0,
+        threadsTotal: 0,
+        threadsUnread: 0,
+      })),
+    });
+
+    const result = await cleanupEmptyLabels({ config, transport, dryRun: true });
+
+    expect(result).toEqual({
+      deletedLabels: ["inboxctl/Empty"],
+      skippedLabels: [],
+      dryRun: true,
+    });
+    expect(transport.deleteLabel).not.toHaveBeenCalled();
   });
 });

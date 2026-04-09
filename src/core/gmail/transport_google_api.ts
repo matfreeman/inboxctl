@@ -55,6 +55,10 @@ export function createGoogleApiTransport(config: Config): GmailTransport {
       });
       return response.data as RawGmailLabel;
     },
+    async deleteLabel(id: string): Promise<void> {
+      const client = await getClient();
+      await client.users.labels.delete({ userId: "me", id });
+    },
     async batchModifyMessages(input): Promise<void> {
       const client = await getClient();
       await client.users.messages.batchModify({

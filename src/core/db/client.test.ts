@@ -72,4 +72,38 @@ describe("database bootstrap", () => {
       total_messages: 3,
     });
   });
+
+  it("creates the filter_events table on a fresh database", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "inboxctl-db-"));
+    tempDirs.push(tempDir);
+    const dbPath = join(tempDir, "emails.db");
+
+    initializeDb(dbPath);
+
+    const sqlite = getSqlite(dbPath);
+    const table = sqlite
+      .prepare(
+        `
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'filter_events'
+        `,
+      )
+      .get() as { name: string } | undefined;
+    const columns = sqlite.prepare("PRAGMA table_info(filter_events)").all() as Array<{ name: string }>;
+
+    expect(table?.name).toBe("filter_events");
+    expect(columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        "id",
+        "gmail_filter_id",
+        "event_type",
+        "run_id",
+        "session_id",
+        "criteria",
+        "actions",
+        "created_at",
+      ]),
+    );
+  });
 });

@@ -294,4 +294,31 @@ describe("getNoiseSenders", () => {
     expect(byAllTime.senders[0]?.allTimeMessageCount).toBe(34);
     expect(byAllTime.senders[0]?.allTimeNoiseScore).toBe(34);
   });
+
+  it("does not fall back to Other for newsletter senders without explicit keyword matches", async () => {
+    const now = Date.now();
+
+    insertEmails(
+      Array.from({ length: 6 }, (_value, index) =>
+        createTestEmail({
+          id: `zasel-${index}`,
+          fromAddress: "hello@zasel.com.au",
+          fromName: "Zasel",
+          subject: `Drop ${index}`,
+          date: now - index * 60_000,
+          isRead: index === 0,
+          labelIds: index === 0 ? ["INBOX"] : ["INBOX", "UNREAD"],
+          listUnsubscribe: "<https://zasel.com.au/unsubscribe>",
+        }),
+      ),
+    );
+
+    const result = await getNoiseSenders({ minNoiseScore: 0 });
+    const zasel = result.senders.find((sender) => sender.email === "hello@zasel.com.au");
+
+    expect(zasel).toBeDefined();
+    expect(zasel?.isNewsletter).toBe(true);
+    expect(zasel?.suggestedCategory).not.toBe("Other");
+    expect(["Newsletters", "Promotions"]).toContain(zasel?.suggestedCategory);
+  });
 });

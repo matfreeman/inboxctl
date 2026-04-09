@@ -76,6 +76,21 @@ CREATE INDEX IF NOT EXISTS idx_execution_items_run_id ON execution_items(run_id)
 CREATE INDEX IF NOT EXISTS idx_execution_items_email_id ON execution_items(email_id);
 CREATE INDEX IF NOT EXISTS idx_execution_items_executed_at ON execution_items(executed_at);
 
+CREATE TABLE IF NOT EXISTS filter_events (
+  id TEXT PRIMARY KEY,
+  gmail_filter_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  run_id TEXT,
+  session_id TEXT,
+  criteria TEXT NOT NULL,
+  actions TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_filter_events_gmail_filter_id ON filter_events(gmail_filter_id);
+CREATE INDEX IF NOT EXISTS idx_filter_events_run_id ON filter_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_filter_events_session_id ON filter_events(session_id);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   id INTEGER PRIMARY KEY,
   account_email TEXT,

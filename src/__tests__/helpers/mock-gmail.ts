@@ -102,6 +102,7 @@ export function createMockTransport(overrides: Partial<GmailTransport> = {}): Gm
     listLabels: vi.fn().mockResolvedValue({ labels: [DEFAULT_LABEL] }),
     getLabel: vi.fn().mockResolvedValue(DEFAULT_LABEL),
     createLabel: vi.fn().mockResolvedValue(DEFAULT_LABEL),
+    deleteLabel: vi.fn().mockResolvedValue(undefined),
     batchModifyMessages: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue({
       id: "sent-1",

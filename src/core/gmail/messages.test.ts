@@ -74,5 +74,50 @@ describe("parseMessage", () => {
     expect(detail.textPlain).toBe("Plain text body");
     expect(detail.body).toBe("Plain text body");
     expect(detail.bodyHtml).toBe("<p>HTML body</p>");
+    expect(detail.bodySource).toBe("text_plain");
+  });
+
+  it("does not treat HTML-only bodies as plain text", () => {
+    const detail = parseMessageDetail({
+      ...createGmailMessage(),
+      snippet: "Fallback snippet",
+      payload: {
+        mimeType: "text/html",
+        headers: createGmailMessage().payload?.headers,
+        body: {
+          data: encode(`
+            <html>
+              <head><style>.hidden { display:none; }</style></head>
+              <body>
+                <div style="display:none;max-height:0">PREHEADER</div>
+                <p>Rendered body</p>
+              </body>
+            </html>
+          `),
+        },
+      },
+    });
+
+    expect(detail.textPlain).toBe("");
+    expect(detail.bodyHtml).toContain("<p>Rendered body</p>");
+    expect(detail.body).toContain("Rendered body");
+    expect(detail.body).not.toContain("PREHEADER");
+    expect(detail.body).not.toContain("@font-face");
+    expect(detail.bodySource).toBe("html_rendered");
+  });
+
+  it("keeps a plain root body fallback when no mimeType is declared", () => {
+    const detail = parseMessageDetail({
+      ...createGmailMessage(),
+      payload: {
+        headers: createGmailMessage().payload?.headers,
+        body: {
+          data: encode("Root plain text body"),
+        },
+      },
+    });
+
+    expect(detail.textPlain).toBe("Root plain text body");
+    expect(detail.bodySource).toBe("text_plain");
   });
 });

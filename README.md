@@ -18,7 +18,7 @@ Emails are never deleted. The tool can label, archive, mark read, and forward, b
 
 | | Count | Examples |
 |---|---|---|
-| **Tools** | 32 | `search_emails`, `get_uncategorized_senders`, `batch_apply_actions`, `query_emails`, `get_noise_senders`, `get_unsubscribe_suggestions`, `deploy_rule`, `create_filter`, `undo_run`, `review_categorized` |
+| **Tools** | 34 | `search_emails`, `get_uncategorized_senders`, `batch_apply_actions`, `query_emails`, `get_noise_senders`, `get_unsubscribe_suggestions`, `deploy_rule`, `create_filter`, `undo_run`, `undo_filters`, `cleanup_labels`, `review_categorized` |
 | **Resources** | 8 | `inbox://recent`, `inbox://summary`, `inbox://action-log`, `schema://query-fields`, `rules://deployed`, `rules://history`, `stats://senders`, `stats://overview` |
 | **Prompts** | 6 | `summarize-inbox`, `review-senders`, `find-newsletters`, `suggest-rules`, `triage-inbox`, `categorize-emails` |
 
@@ -104,12 +104,13 @@ inboxctl demo               # launch the seeded demo mailbox
 ## Features
 
 - **MCP server** with the full feature set exposed as tools, resources, and prompts.
-- **Context-efficient sender workflows** with `get_uncategorized_senders` for large inbox categorization without loading every email into an agent context window.
+- **Context-efficient sender workflows** with `get_uncategorized_senders`, which returns compact sender-level results by default and only includes email IDs when explicitly requested for a mutation batch.
 - **Rules as code** in YAML, with deploy, dry-run, apply, drift detection, audit logging, and undo.
 - **Local-first analytics** on top senders, unread rates, newsletter detection, uncategorized senders, noise scoring, unsubscribe impact, anomaly review, labels, and volume trends.
 - **Structured inbox queries** for fixed filters, aggregations, and grouping across the local cache.
 - **Gmail filter management** for always-on server-side rules on future incoming mail.
-- **Full audit trail** with before/after state snapshots for reversible actions.
+- **Full audit trail** with before/after state snapshots for reversible actions, tracked Gmail filter creation/deletion, and empty-label cleanup after session undo.
+- **Safer rule undo** that auto-disables the originating YAML rule after `undo_run` so the same rule does not immediately re-apply.
 - **Interactive TUI** for inbox triage, email detail, expanded stats dashboards, rules, and search.
 - **Guided setup wizard** for Google Cloud and local OAuth configuration.
 - **Demo mode** with realistic seeded data for screenshots, recordings, and safe exploration.
@@ -258,6 +259,8 @@ Native dependency note:
 
 - No deletion. There is no code path that calls `messages.delete` or `messages.trash`.
 - Minimal OAuth scopes: `gmail.modify`, `gmail.labels`, `gmail.settings.basic`, and `userinfo.email`.
+- `undo_run` restores recorded label snapshots and auto-disables the originating rule when the run came from a YAML rule.
+- `undo_filters` removes inboxctl-created Gmail filters for a run or session, and `cleanup_labels` removes empty `inboxctl/*` labels left behind after undo.
 - Dry-run by default for rules.
 - Audit trail for every reversible mutation.
 - Undo support for reversible actions.

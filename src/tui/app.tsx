@@ -46,6 +46,12 @@ import {
   incrementalSync,
   type SyncProgressEvent,
 } from "../core/sync/sync.js";
+import { openEmailInBrowser } from "./browser.js";
+import {
+  formatEmailBody,
+  getEmailBodySourceLabel,
+  type FormattedEmailBody,
+} from "./email-format.js";
 
 type Screen = "inbox" | "email" | "stats" | "rules" | "search";
 type StatsTab = "senders" | "labels" | "newsletters" | "noise" | "uncategorized" | "unsubscribe";
@@ -99,6 +105,12 @@ interface SyncState {
 const PAGE_SIZE = 20;
 const SEARCH_LIMIT = 50;
 const MIN_CONTENT_HEIGHT = 10;
+const EMPTY_EMAIL_BODY: FormattedEmailBody = {
+  text: "",
+  source: "snippet_fallback",
+  quality: "high",
+  warnings: [],
+};
 
 function stripAnsi(value: string): string {
   return value.replace(/\u001B\[[0-9;]*m/g, "");
@@ -150,6 +162,10 @@ function sanitizeInlineText(value: string, width?: number): string {
 
 function formatFlashText(value: string): string {
   return sanitizeInlineText(value, 240);
+}
+
+function sanitizeBodyLine(value: string, width: number): string {
+  return truncate(value.replace(/\r/g, "").replace(/\t/g, "  "), width);
 }
 
 function formatRelativeTime(value: number | Date | null | undefined): string {
@@ -242,18 +258,19 @@ function toneColor(tone: FlashTone): "blue" | "green" | "red" {
   }
 }
 
-function getBodyText(detail: EmailDetail): string {
-  if (detail.textPlain?.trim()) {
-    return detail.textPlain.trim();
+function getBodyQualityColor(quality: FormattedEmailBody["quality"]): "green" | "yellow" | "red" {
+  switch (quality) {
+    case "high":
+      return "green";
+    case "medium":
+      return "yellow";
+    case "low":
+      return "red";
   }
+}
 
-  if (detail.bodyHtml?.trim()) {
-    return convert(detail.bodyHtml, {
-      wordwrap: Math.max(terminalWidth() - 10, 40),
-    }).trim();
-  }
-
-  return detail.body?.trim() || detail.snippet || "";
+function isOpenBrowserInput(input: string, key: { ctrl: boolean; meta: boolean }): boolean {
+  return input === "o" || input === "O" || ((key.ctrl || key.meta) && input === "o");
 }
 
 function useTerminalSize(): { columns: number; rows: number } {
@@ -298,20 +315,20 @@ function getViewportRange(
   };
 }
 
-function getScreenGuide(screen: Screen, focus?: RulesFocus | SearchFocus): string {
+export function getScreenGuide(screen: Screen, focus?: RulesFocus | SearchFocus): string {
   const global = "q quit  •  s sync  •  / search  •  d stats  •  R rules";
 
   switch (screen) {
     case "inbox":
-      return `${global}  •  j/k move  •  Enter open  •  a archive  •  l label  •  r read`;
+      return `${global}  •  j/k move  •  Enter open  •  a archive  •  l label  •  r read  •  O open Gmail`;
     case "email":
-      return "Esc back  •  j/k scroll  •  a archive  •  l label  •  r toggle read";
+      return "Esc back  •  j/k scroll  •  a archive  •  l label  •  r toggle read  •  O open Gmail";
     case "stats":
       return "Esc back  •  s senders  •  l labels  •  n newsletters  •  o noise  •  c uncategorized  •  u unsubscribe";
     case "rules":
       return `Esc back  •  Tab switch ${focus === "history" ? "history" : "rules"} focus  •  d deploy  •  e toggle  •  r dry-run  •  R apply  •  u undo`;
     case "search":
-      return `Esc back  •  Enter search  •  i focus input  •  ${focus === "input" ? "type Gmail query" : "j/k move  •  Enter open  •  a archive  •  l label  •  r read"}`;
+      return `Esc back  •  Enter search  •  i focus input  •  ${focus === "input" ? "type Gmail query" : "j/k move  •  Enter open  •  a archive  •  l label  •  r read  •  O open Gmail"}`;
   }
 }
 
@@ -657,7 +674,7 @@ export function App({ initialSync = true }: AppProps) {
 
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [emailDetail, setEmailDetail] = useState<EmailDetail | null>(null);
-  const [emailBody, setEmailBody] = useState("");
+  const [emailBody, setEmailBody] = useState<FormattedEmailBody>(EMPTY_EMAIL_BODY);
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailScroll, setEmailScroll] = useState(0);
 
@@ -791,10 +808,8 @@ export function App({ initialSync = true }: AppProps) {
     try {
       const detail = await getMessage(emailId);
       setEmailDetail(detail);
-      setEmailBody(getBodyText(detail));
     } catch (error) {
       setEmailDetail(null);
-      setEmailBody("");
       pushFlash("error", error instanceof Error ? error.message : String(error));
     } finally {
       setEmailLoading(false);
@@ -898,6 +913,23 @@ export function App({ initialSync = true }: AppProps) {
     }
 
     return inboxEmails[inboxSelectedIndex] || null;
+  }
+
+  async function openCurrentEmailInBrowser(): Promise<void> {
+    const target = screen === "email"
+      ? emailDetail
+      : currentListSelection();
+
+    if (!target) {
+      return;
+    }
+
+    try {
+      await openEmailInBrowser(target);
+      pushFlash("info", `Opened ${target.subject || target.threadId || "message"} in Gmail.`);
+    } catch (error) {
+      pushFlash("error", error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function archiveCurrentEmail(): Promise<void> {
@@ -1065,6 +1097,15 @@ export function App({ initialSync = true }: AppProps) {
   }, [screen, selectedEmailId]);
 
   useEffect(() => {
+    if (!emailDetail) {
+      setEmailBody(EMPTY_EMAIL_BODY);
+      return;
+    }
+
+    setEmailBody(formatEmailBody(emailDetail, Math.max(20, columns - 8)));
+  }, [emailDetail, columns]);
+
+  useEffect(() => {
     if (!flash) {
       return;
     }
@@ -1193,6 +1234,11 @@ export function App({ initialSync = true }: AppProps) {
         return;
       }
 
+      if (isOpenBrowserInput(input, key)) {
+        void openCurrentEmailInBrowser();
+        return;
+      }
+
       if (input === "/") {
         setScreen("search");
         setSearchFocus("input");
@@ -1243,6 +1289,11 @@ export function App({ initialSync = true }: AppProps) {
 
       if (input === "r") {
         void toggleReadCurrentEmail();
+        return;
+      }
+
+      if (isOpenBrowserInput(input, key)) {
+        void openCurrentEmailInBrowser();
       }
       return;
     }
@@ -1452,6 +1503,11 @@ export function App({ initialSync = true }: AppProps) {
 
       if (input === "r") {
         void toggleReadCurrentEmail();
+        return;
+      }
+
+      if (isOpenBrowserInput(input, key)) {
+        void openCurrentEmailInBrowser();
       }
     }
   });
@@ -1460,7 +1516,7 @@ export function App({ initialSync = true }: AppProps) {
   const contentHeight = Math.max(MIN_CONTENT_HEIGHT, rows - chromeHeight);
   const emailBodyHeight = Math.max(8, contentHeight - 8);
   const listVisibleRows = Math.max(8, contentHeight - 6);
-  const emailBodyLines = emailBody.split("\n");
+  const emailBodyLines = emailBody.text.split("\n");
   const visibleBodyLines = emailBodyLines.slice(emailScroll, emailScroll + emailBodyHeight);
   const rulesVisibleCount = Math.max(5, Math.floor(contentHeight / 3));
   const historyVisibleCount = Math.max(4, Math.floor(contentHeight / 4));
@@ -1503,7 +1559,7 @@ export function App({ initialSync = true }: AppProps) {
       {screen === "email" ? (
         <Panel
           title={sanitizeInlineText(emailDetail?.subject || "Email Detail", Math.max(20, columns - 12))}
-          subtitle="Esc back  •  j/k scroll  •  a archive  •  l label  •  r toggle read"
+          subtitle="Esc back  •  j/k scroll  •  a archive  •  l label  •  r toggle read  •  O open Gmail"
           accent="green"
         >
           {emailLoading ? (
@@ -1518,12 +1574,19 @@ export function App({ initialSync = true }: AppProps) {
               <Text>To: {sanitizeInlineText(emailDetail.toAddresses.join(", ") || "-")}</Text>
               <Text>Date: {new Date(emailDetail.date).toISOString()}</Text>
               <Text>Labels: {sanitizeInlineText(emailDetail.labelIds.join(", ") || "-")}</Text>
+              <Text color={getBodyQualityColor(emailBody.quality)}>
+                View: {getEmailBodySourceLabel(emailBody.source)}
+                {emailBody.source === "html_rendered" ? ` • ${emailBody.quality} quality` : ""}
+              </Text>
+              {emailBody.warnings[0] ? (
+                <Text color="yellow">{sanitizeInlineText(emailBody.warnings[0], Math.max(20, columns - 8))}</Text>
+              ) : null}
               <Box marginTop={1} flexDirection="column">
                 {visibleBodyLines.length === 0 ? (
                   <Text color="gray">(no body content)</Text>
                 ) : (
                   visibleBodyLines.map((line, index) => (
-                    <Text key={`body-${index}`}>{sanitizeInlineText(line || " ", Math.max(20, columns - 8))}</Text>
+                    <Text key={`body-${index}`}>{sanitizeBodyLine(line || " ", Math.max(20, columns - 8))}</Text>
                   ))
                 )}
               </Box>

@@ -140,17 +140,16 @@ describe("getUncategorizedSenders", () => {
     expect(result.senders[0]).toMatchObject({
       sender: "newsletter@example.com",
       emailCount: 2,
-      emailIds: ["newsletter-1", "newsletter-2"],
       unreadCount: 1,
       unreadRate: 50,
       newestSubject: "Issue #3",
-      secondSubject: "Issue #2",
-      newestSnippet: "Latest issue",
       hasUnsubscribe: true,
       confidence: "high",
       totalFromSender: 2,
       domain: "example.com",
     });
+    expect(result.senders[0]).not.toHaveProperty("emailIds");
+    expect(result.senders[0]).not.toHaveProperty("emailIdsTruncated");
     expect(result.senders[0]?.signals).toEqual(
       expect.arrayContaining(["list_unsubscribe_header", "newsletter_list_header"]),
     );
@@ -219,7 +218,7 @@ describe("getUncategorizedSenders", () => {
     expect(paged.senders[0]?.sender).toBe("person@example.net");
   });
 
-  it("sorts by unread rate and truncates large email id lists", async () => {
+  it("includes email ids only when explicitly requested and still truncates at 500", async () => {
     const now = Date.now();
 
     insertEmails([
@@ -249,11 +248,52 @@ describe("getUncategorizedSenders", () => {
     const result = await getUncategorizedSenders({
       sortBy: "unread_rate",
       limit: 10,
+      includeEmailIds: true,
     });
 
     expect(result.senders[0]?.sender).toBe("bulk@example.com");
     expect(result.senders[0]?.emailIds.length).toBe(500);
     expect(result.senders[0]?.emailIdsTruncated).toBe(true);
     expect(result.senders[0]?.unreadRate).toBeGreaterThan(result.senders[1]?.unreadRate || 0);
+  });
+
+  it("excludes spam and trash labelled emails from sender aggregation", async () => {
+    const now = Date.now();
+
+    insertEmails([
+      createTestEmail({
+        id: "valid-1",
+        fromAddress: "alerts@example.com",
+        fromName: "Alerts",
+        subject: "Valid alert",
+        date: now,
+        isRead: false,
+        labelIds: ["INBOX", "UNREAD"],
+      }),
+      createTestEmail({
+        id: "spam-1",
+        fromAddress: "coffee@coffeecompany.com.au",
+        fromName: "Coffee Company",
+        subject: "Shipment Delivered",
+        date: now - 60_000,
+        isRead: false,
+        labelIds: ["UNREAD", "CATEGORY_UPDATES", "SPAM"],
+      }),
+      createTestEmail({
+        id: "trash-1",
+        fromAddress: "trash@example.com",
+        fromName: "Trash Sender",
+        subject: "Discarded",
+        date: now - 120_000,
+        isRead: false,
+        labelIds: ["TRASH"],
+      }),
+    ]);
+
+    const result = await getUncategorizedSenders({ limit: 10 });
+
+    expect(result.totalSenders).toBe(1);
+    expect(result.totalEmails).toBe(1);
+    expect(result.senders.map((sender) => sender.sender)).toEqual(["alerts@example.com"]);
   });
 });

@@ -8,7 +8,7 @@ import { loadTokens } from "../core/auth/tokens.js";
 import { initializeDb } from "../core/db/client.js";
 import { batchApplyActions } from "../core/gmail/batch.js";
 import { getGmailReadiness } from "../core/gmail/client.js";
-import { createLabel, listLabels } from "../core/gmail/labels.js";
+import { cleanupEmptyLabels, createLabel, listLabels } from "../core/gmail/labels.js";
 import { getMessage, listMessages } from "../core/gmail/messages.js";
 import {
   archiveEmails,
@@ -48,12 +48,13 @@ import {
   deleteFilter,
   getFilter,
   listFilters,
+  undoFilters,
 } from "../core/gmail/filters.js";
 import { getRecentEmails } from "../core/sync/cache.js";
 import { fullSync, getSyncStatus, incrementalSync } from "../core/sync/sync.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MCP_VERSION = "0.4.0";
+const MCP_VERSION = "0.7.0";
 
 export const MCP_TOOLS = [
   "search_emails",
@@ -66,8 +67,10 @@ export const MCP_TOOLS = [
   "batch_apply_actions",
   "forward_email",
   "undo_run",
+  "undo_filters",
   "get_labels",
   "create_label",
+  "cleanup_labels",
   "get_inbox_stats",
   "get_top_senders",
   "get_sender_stats",
@@ -511,6 +514,32 @@ export async function createMcpServer(): Promise<{
   );
 
   server.registerTool(
+    "undo_filters",
+    {
+      description:
+        "Delete Gmail filters previously created by inboxctl during a specific execution run or session. This only affects future mail handling.",
+      inputSchema: {
+        run_id: z.string().min(1).optional(),
+        session_id: z.string().min(1).optional(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    toolHandler(async ({ run_id, session_id }) => {
+      if (!run_id && !session_id) {
+        throw new Error("run_id or session_id is required");
+      }
+
+      return undoFilters({
+        runId: run_id,
+        sessionId: session_id,
+      });
+    }),
+  );
+
+  server.registerTool(
     "get_labels",
     {
       description: "List Gmail labels with message and unread counts.",
@@ -543,6 +572,27 @@ export async function createMcpServer(): Promise<{
         note: color ? "Color hints are not applied yet; the label was created with Gmail defaults." : null,
       };
     }),
+  );
+
+  server.registerTool(
+    "cleanup_labels",
+    {
+      description:
+        "Delete empty inboxctl-managed Gmail labels, typically after undoing a categorisation or cleanup session.",
+      inputSchema: {
+        prefix: z.string().min(1).optional(),
+        dry_run: z.boolean().optional(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    toolHandler(async ({ prefix, dry_run }) =>
+      cleanupEmptyLabels({
+        prefix,
+        dryRun: dry_run,
+      })),
   );
 
   server.registerTool(
@@ -659,12 +709,14 @@ export async function createMcpServer(): Promise<{
           .describe("Only include uncategorized emails on or after this ISO date."),
         sort_by: z.enum(["email_count", "newest", "unread_rate"]).optional()
           .describe("Sort senders by email volume, most recent email, or unread rate."),
+        include_email_ids: z.boolean().optional()
+          .describe("Include emailIds for each sender. Defaults to false to keep payloads small. Only enable when you are about to act on a small batch."),
       },
       annotations: {
         readOnlyHint: true,
       },
     },
-    toolHandler(async ({ limit, offset, min_emails, confidence, since, sort_by }) =>
+    toolHandler(async ({ limit, offset, min_emails, confidence, since, sort_by, include_email_ids }) =>
       getUncategorizedSenders({
         limit,
         offset,
@@ -672,6 +724,7 @@ export async function createMcpServer(): Promise<{
         confidence,
         since,
         sortBy: sort_by,
+        includeEmailIds: include_email_ids,
       })),
   );
 
@@ -1102,8 +1155,8 @@ export async function createMcpServer(): Promise<{
         "Categorise uncategorised emails in the user's inbox.",
         [
           "Step 1 — Gather data:",
-          "  Use `get_uncategorized_senders` first (start with limit 100).",
-          "  This groups uncategorized emails by sender and is the primary way to process large inbox backlogs efficiently.",
+          "  Use `get_uncategorized_senders` first (start with limit 100, leave `include_email_ids` unset).",
+          "  This groups uncategorized emails by sender and keeps the initial payload small enough for large inbox backlogs.",
           "  Use `get_uncategorized_emails` only when you need to inspect specific emails from an ambiguous sender.",
           "  If totalSenders is more than 500, ask whether to process the recent batch or paginate through the full backlog.",
           "  Use `get_noise_senders` for sender context.",
@@ -1138,7 +1191,9 @@ export async function createMcpServer(): Promise<{
           "",
           "Step 4 — Apply with user approval:",
           "  Create labels for any new categories (use `create_label`).",
-          "  Use `batch_apply_actions` to apply labels in one call, grouping by action set and reusing each sender's `emailIds`.",
+          "  Before calling `batch_apply_actions`, fetch IDs only for the senders you are about to mutate.",
+          "  Re-run `get_uncategorized_senders` with `include_email_ids: true` for a small page, or fetch the sender's specific messages separately.",
+          "  Then call `batch_apply_actions`, grouping by action set and reusing just those retrieved email IDs.",
           "  For Newsletters and Promotions with high unread rates, suggest mark_read + archive or `unsubscribe` when a link is available.",
           "  For Receipts/Shipping/Notifications, suggest mark_read only (keep in inbox).",
           "  For Important, do not mark read or archive.",
@@ -1156,6 +1211,8 @@ export async function createMcpServer(): Promise<{
           "Step 7 — Post-categorisation audit:",
           "  After applying actions, call `review_categorized` to check for anomalies.",
           "  If anomalies are found, present them with the option to undo the relevant run.",
+          "  If the user wants to fully unwind the session, suggest `undo_filters` for any Gmail filters created during it.",
+          "  Suggest `cleanup_labels` after undoing runs to remove empty `inboxctl/*` labels.",
         ].join("\n"),
       ),
   );
@@ -1200,6 +1257,8 @@ export async function createMcpServer(): Promise<{
         mark_read: z.boolean().optional().describe("Mark matching emails as read"),
         star: z.boolean().optional().describe("Star matching emails"),
         forward: z.string().email().optional().describe("Forward matching emails to this address (address must be verified in Gmail settings)"),
+        run_id: z.string().optional().describe("Associate this filter with an inboxctl execution run for later undo_filters"),
+        session_id: z.string().optional().describe("Associate this filter with an inboxctl session identifier for later undo_filters"),
       },
     },
     toolHandler(async (args) =>
@@ -1218,6 +1277,8 @@ export async function createMcpServer(): Promise<{
         markRead: args.mark_read,
         star: args.star,
         forward: args.forward,
+        runId: args.run_id,
+        sessionId: args.session_id,
       }),
     ),
   );
@@ -1229,11 +1290,16 @@ export async function createMcpServer(): Promise<{
         "Delete a Gmail server-side filter by ID. The filter stops processing future mail immediately. Already-processed mail is not affected. Use list_filters to find filter IDs.",
       inputSchema: {
         filter_id: z.string().min(1).describe("Gmail filter ID to delete"),
+        run_id: z.string().optional().describe("Associate this delete event with an inboxctl execution run"),
+        session_id: z.string().optional().describe("Associate this delete event with an inboxctl session identifier"),
       },
     },
-    toolHandler(async ({ filter_id }) => {
-      await deleteFilter(filter_id);
-      return { deleted: true, filter_id };
+    toolHandler(async ({ filter_id, run_id, session_id }) => {
+      await deleteFilter(filter_id, {
+        runId: run_id,
+        sessionId: session_id,
+      });
+      return { deleted: true, filter_id, run_id: run_id ?? null, session_id: session_id ?? null };
     }),
   );
 

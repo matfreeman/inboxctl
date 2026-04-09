@@ -117,10 +117,13 @@ export interface EmailThread {
   messages: EmailMessage[];
 }
 
+export type EmailBodySource = "text_plain" | "html_rendered" | "snippet_fallback";
+
 export interface EmailDetail extends EmailMessage {
   textPlain: string;
   body: string;
   bodyHtml: string | null;
+  bodySource: EmailBodySource;
 }
 
 // Gmail Filter API types

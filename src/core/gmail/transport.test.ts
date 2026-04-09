@@ -36,6 +36,7 @@ function makeTransportStub(kind: "google-api" | "rest"): GmailTransport {
     listLabels: vi.fn(),
     getLabel: vi.fn(),
     createLabel: vi.fn(),
+    deleteLabel: vi.fn(),
     batchModifyMessages: vi.fn(),
     sendMessage: vi.fn(),
     listMessages: vi.fn(),

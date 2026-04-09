@@ -1,6 +1,6 @@
 import { resolveUnsubscribeTarget } from "../unsubscribe.js";
 import { detectNewsletters } from "./newsletters.js";
-import { getStatsSqlite, normalizeLimit, roundPercent } from "./common.js";
+import { extractDomain, getStatsSqlite, normalizeLimit, roundPercent } from "./common.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -71,13 +71,43 @@ function roundNoiseScore(messageCount: number, unreadRate: number): number {
   return Math.round((messageCount * unreadRate * 10) / 100) / 10;
 }
 
-function getSuggestedCategory(email: string, name: string): string {
+function getSuggestedCategory(email: string, name: string, isNewsletter: boolean): string {
   const haystack = `${email} ${name}`.toLowerCase();
+  const domain = extractDomain(email) || "";
+
+  if (isNewsletter) {
+    if (
+      haystack.includes("promo") ||
+      haystack.includes("offer") ||
+      haystack.includes("deal") ||
+      haystack.includes("sale") ||
+      haystack.includes("marketing") ||
+      domain.includes("marketing.") ||
+      domain.includes("mailer.") ||
+      domain.includes("email.")
+    ) {
+      return "Promotions";
+    }
+  }
 
   for (const rule of SUGGESTED_CATEGORY_RULES) {
     if (rule.keywords.some((keyword) => haystack.includes(keyword))) {
       return rule.category;
     }
+  }
+
+  if (isNewsletter) {
+    if (
+      domain.includes("edm.") ||
+      domain.includes("email.") ||
+      domain.includes("mailer.") ||
+      domain.includes("newsletter.") ||
+      domain.includes("marketing.")
+    ) {
+      return "Newsletters";
+    }
+
+    return "Newsletters";
   }
 
   return "Other";
@@ -186,6 +216,7 @@ export async function getNoiseSenders(
         row.newsletterUnsubscribeLink,
         row.emailUnsubscribeHeaders,
       );
+      const isNewsletter = row.isNewsletter === 1;
 
       return {
         email: row.email,
@@ -197,10 +228,14 @@ export async function getNoiseSenders(
         noiseScore,
         allTimeNoiseScore,
         lastSeen: toIsoString(row.lastSeen),
-        isNewsletter: row.isNewsletter === 1,
+        isNewsletter,
         hasUnsubscribeLink: Boolean(unsubscribe.unsubscribeLink),
         unsubscribeLink: unsubscribe.unsubscribeLink,
-        suggestedCategory: getSuggestedCategory(row.email, row.name?.trim() || row.email),
+        suggestedCategory: getSuggestedCategory(
+          row.email,
+          row.name?.trim() || row.email,
+          isNewsletter,
+        ),
       };
     })
     .filter((sender) => sender.noiseScore >= minNoiseScore)

@@ -349,6 +349,12 @@ export class DemoTransport implements GmailTransport {
       throw new Error(`Demo filter not found: ${id}`);
     }
   }
+
+  async deleteLabel(id: string): Promise<void> {
+    if (!this.labels.delete(id)) {
+      throw new Error(`Demo label not found: ${id}`);
+    }
+  }
 }
 
 export function createDemoTransport(dataset: DemoDataset): GmailTransport {

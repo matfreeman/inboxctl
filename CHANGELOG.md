@@ -14,6 +14,54 @@ The format follows Keep a Changelog and the project uses Semantic Versioning.
 
 ### Security
 
+## [0.7.0] - 2026-04-09
+
+### Added
+
+- Added browser handoff from the TUI so the selected inbox, search, or detail-view message can be opened directly in Gmail with `O`.
+
+### Changed
+
+- Hardened TUI email rendering for HTML-heavy mail with explicit body-source tracking, cleaned HTML-to-terminal formatting, and render-quality hints in the email detail view.
+
+### Fixed
+
+- Fixed Gmail message parsing so HTML-only bodies no longer leak raw HTML/CSS into the `textPlain` path before terminal rendering.
+
+## [0.6.1] - 2026-04-09
+
+### Fixed
+
+- Fixed confidence scoring so high-volume transactional/service senders no longer get misclassified as `personal_sender_address`, including new automated-address markers and a volume safeguard.
+- Fixed `get_uncategorized_emails` and `get_uncategorized_senders` so messages in `SPAM` or `TRASH` no longer appear in uncategorized results.
+- Fixed `get_noise_senders` category inference so newsletter-like senders do not fall back to `Other` when `isNewsletter` is already known.
+
+## [0.6.0] - 2026-04-09
+
+### Added
+
+- Added an `include_email_ids` opt-in to `get_uncategorized_senders` so callers can request sender email IDs only when they are ready to mutate a small batch.
+
+### Changed
+
+- Updated the categorization prompt and Claude Code categorise skill to use the new two-step sender workflow: compact sender discovery first, targeted ID fetch second.
+
+### Fixed
+
+- Fixed `get_uncategorized_senders` MCP payload overflow by omitting `emailIds` and `emailIdsTruncated` from the default response shape.
+
+## [0.5.0] - 2026-04-09
+
+### Added
+
+- Added filter event tracking plus the `undo_filters` MCP tool so inboxctl-created Gmail filters can be removed by run or session after the fact.
+- Added `cleanup_labels` for removing empty `inboxctl/*` Gmail labels left behind after undoing categorisation work.
+
+### Changed
+
+- Updated `undo_run` to auto-disable the originating YAML rule after a rule-backed run is reversed, and now return the affected rule metadata in the response.
+- Updated the Claude Code skills and MCP categorisation prompt to point agents at the new reversibility workflow for filters, labels, and rule runs.
+
 ## [0.4.0] - 2026-04-09
 
 ### Added

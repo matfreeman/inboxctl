@@ -34,9 +34,27 @@ const AUTOMATED_ADDRESS_MARKERS = [
   "no-reply",
   "no_reply",
   "newsletter",
+  "transaction",
+  "transactions",
+  "order",
+  "orders",
+  "orders-noreply",
+  "service",
+  "services",
+  "notify",
   "notifications",
   "notification",
+  "alert",
+  "alerts",
+  "confirm",
+  "confirmation",
+  "delivery",
+  "tracking",
+  "auto",
+  "automated",
   "mailer",
+  "bounce",
+  "postmaster",
   "info@",
   "hello@",
   "support@",
@@ -153,6 +171,7 @@ export interface ConfidenceResult {
 export function computeConfidence(row: ConfidenceRowInput): ConfidenceResult {
   const signals: string[] = [];
   let score = 0;
+  const totalFromSender = row.totalFromSender ?? 0;
   const hasDefinitiveNewsletterSignal =
     Boolean(row.listUnsubscribe && row.listUnsubscribe.trim()) ||
     Boolean(row.detectionReason?.includes("list_unsubscribe"));
@@ -167,10 +186,10 @@ export function computeConfidence(row: ConfidenceRowInput): ConfidenceResult {
     score += 2;
   }
 
-  if ((row.totalFromSender ?? 0) >= 20) {
+  if (totalFromSender >= 20) {
     signals.push("high_volume_sender");
     score += 2;
-  } else if ((row.totalFromSender ?? 0) >= 5) {
+  } else if (totalFromSender >= 5) {
     signals.push("moderate_volume_sender");
     score += 1;
   }
@@ -185,7 +204,7 @@ export function computeConfidence(row: ConfidenceRowInput): ConfidenceResult {
     score += 1;
   }
 
-  if ((row.totalFromSender ?? 0) <= 2 && !hasDefinitiveNewsletterSignal) {
+  if (totalFromSender <= 2 && !hasDefinitiveNewsletterSignal) {
     signals.push("rare_sender");
     score -= 3;
   }
@@ -195,7 +214,11 @@ export function computeConfidence(row: ConfidenceRowInput): ConfidenceResult {
     score -= 2;
   }
 
-  if (!row.detectionReason && !isLikelyAutomatedSenderAddress(row.sender || "")) {
+  if (
+    !row.detectionReason &&
+    totalFromSender < 50 &&
+    !isLikelyAutomatedSenderAddress(row.sender || "")
+  ) {
     signals.push("personal_sender_address");
     score -= 2;
   }

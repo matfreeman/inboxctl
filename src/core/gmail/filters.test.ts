@@ -1,10 +1,21 @@
 import { mkdtempSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../../config.js";
-import { createFilter, deleteFilter, getFilter, listFilters } from "./filters.js";
+import { getSqlite } from "../db/client.js";
+import {
+  createFilter,
+  deleteFilter,
+  getActiveFiltersByRun,
+  getActiveFiltersBySession,
+  getFilter,
+  getFilterEvents,
+  listFilters,
+  undoFilters,
+} from "./filters.js";
 import type { GmailTransport } from "./transport.js";
 
 const tempDirs: string[] = [];
@@ -91,6 +102,7 @@ function makeTransport(overrides: Partial<GmailTransport> = {}): GmailTransport 
     listLabels,
     getLabel,
     createLabel,
+    deleteLabel: vi.fn(async () => undefined),
     batchModifyMessages: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => ({ id: "sent-1" })),
     listMessages: vi.fn(async () => ({ messages: [] })),
@@ -103,6 +115,39 @@ function makeTransport(overrides: Partial<GmailTransport> = {}): GmailTransport 
     deleteFilter: deleteFilterFn,
     ...overrides,
   } as unknown as GmailTransport;
+}
+
+function insertFilterEvent(
+  config: Config,
+  input: {
+    gmailFilterId: string;
+    eventType: "created" | "deleted";
+    runId?: string | null;
+    sessionId?: string | null;
+    criteria?: Record<string, unknown>;
+    actions?: Record<string, unknown>;
+    createdAt?: number;
+  },
+): void {
+  const sqlite = getSqlite(config.dbPath);
+  sqlite
+    .prepare(
+      `
+      INSERT INTO filter_events (
+        id, gmail_filter_id, event_type, run_id, session_id, criteria, actions, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    )
+    .run(
+      randomUUID(),
+      input.gmailFilterId,
+      input.eventType,
+      input.runId ?? null,
+      input.sessionId ?? null,
+      JSON.stringify(input.criteria ?? { from: "seed@example.com" }),
+      JSON.stringify(input.actions ?? { archive: true, addLabelNames: [], removeLabelNames: [], forward: null, markRead: false, star: false }),
+      input.createdAt ?? Date.now(),
+    );
 }
 
 describe("gmail filters", () => {
@@ -287,6 +332,32 @@ describe("gmail filters", () => {
         }),
       );
     });
+
+    it("records a created filter event with run and session metadata", async () => {
+      const config = makeConfig();
+      const transport = makeTransport();
+
+      await createFilter(
+        {
+          from: "promo@example.com",
+          archive: true,
+          runId: "run-123",
+          sessionId: "session-abc",
+        },
+        { config, transport },
+      );
+
+      const events = await getFilterEvents({ config });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        gmailFilterId: "filter-new",
+        eventType: "created",
+        runId: "run-123",
+        sessionId: "session-abc",
+      });
+      expect(events[0]?.criteria.from).toBe("promo@example.com");
+      expect(events[0]?.actions.archive).toBe(true);
+    });
   });
 
   describe("deleteFilter", () => {
@@ -297,6 +368,138 @@ describe("gmail filters", () => {
       await deleteFilter("filter-1", { config, transport });
 
       expect(transport.deleteFilter).toHaveBeenCalledWith("filter-1");
+    });
+
+    it("records a deleted filter event using the filter snapshot", async () => {
+      const config = makeConfig();
+      const transport = makeTransport();
+
+      await deleteFilter("filter-1", {
+        config,
+        transport,
+        runId: "run-456",
+        sessionId: "session-def",
+      });
+
+      const events = await getFilterEvents({ config, eventType: "deleted" });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        gmailFilterId: "filter-1",
+        eventType: "deleted",
+        runId: "run-456",
+        sessionId: "session-def",
+      });
+      expect(events[0]?.criteria.from).toBe("newsletter@example.com");
+      expect(events[0]?.actions.archive).toBe(true);
+    });
+  });
+
+  describe("filter event queries", () => {
+    it("filters filter events by run, session, type, and limit", async () => {
+      const config = makeConfig();
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-a",
+        eventType: "created",
+        runId: "run-a",
+        sessionId: "session-a",
+        createdAt: 10,
+      });
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-b",
+        eventType: "deleted",
+        runId: "run-a",
+        sessionId: "session-a",
+        createdAt: 20,
+      });
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-c",
+        eventType: "created",
+        runId: "run-b",
+        sessionId: "session-b",
+        createdAt: 30,
+      });
+
+      expect(await getFilterEvents({ config, runId: "run-a" })).toHaveLength(2);
+      expect(await getFilterEvents({ config, sessionId: "session-a", eventType: "deleted" })).toHaveLength(1);
+      expect((await getFilterEvents({ config, limit: 1 }))[0]?.gmailFilterId).toBe("filter-c");
+    });
+
+    it("returns only active created filters for a session or run", async () => {
+      const config = makeConfig();
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-live",
+        eventType: "created",
+        runId: "run-1",
+        sessionId: "session-1",
+        createdAt: 100,
+      });
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-deleted",
+        eventType: "created",
+        runId: "run-1",
+        sessionId: "session-1",
+        createdAt: 110,
+      });
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-deleted",
+        eventType: "deleted",
+        runId: "run-1",
+        sessionId: "session-2",
+        createdAt: 120,
+      });
+
+      expect((await getActiveFiltersBySession("session-1", { config })).map((event) => event.gmailFilterId)).toEqual(["filter-live"]);
+      expect((await getActiveFiltersByRun("run-1", { config })).map((event) => event.gmailFilterId)).toEqual(["filter-live"]);
+    });
+  });
+
+  describe("undoFilters", () => {
+    it("deletes all active filters for a run and records delete events", async () => {
+      const config = makeConfig();
+      const transport = makeTransport({
+        deleteFilter: vi.fn(async () => undefined),
+        getFilter: vi.fn(async (id: string) => ({
+          id,
+          criteria: { from: `${id}@example.com` },
+          action: { removeLabelIds: ["INBOX"] },
+        })),
+      });
+
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-a",
+        eventType: "created",
+        runId: "run-undo",
+        createdAt: 1,
+      });
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-b",
+        eventType: "created",
+        runId: "run-undo",
+        createdAt: 2,
+      });
+      insertFilterEvent(config, {
+        gmailFilterId: "filter-b",
+        eventType: "deleted",
+        runId: "run-undo",
+        createdAt: 3,
+      });
+
+      const result = await undoFilters({ runId: "run-undo", config, transport });
+
+      expect(result).toMatchObject({
+        deletedCount: 1,
+        errorCount: 0,
+        deletedFilterIds: ["filter-a"],
+      });
+      expect(transport.deleteFilter).toHaveBeenCalledTimes(1);
+      expect(transport.deleteFilter).toHaveBeenCalledWith("filter-a");
+
+      const deletedEvents = await getFilterEvents({
+        config,
+        eventType: "deleted",
+        runId: "run-undo",
+      });
+      expect(deletedEvents.map((event) => event.gmailFilterId)).toContain("filter-a");
     });
   });
 

@@ -88,6 +88,27 @@ export const executionItems = sqliteTable(
   ],
 );
 
+// --- filter_events ---
+// Audit trail for Gmail filter create/delete operations
+export const filterEvents = sqliteTable(
+  "filter_events",
+  {
+    id: text("id").primaryKey(),
+    gmailFilterId: text("gmail_filter_id").notNull(),
+    eventType: text("event_type").notNull(), // created | deleted
+    runId: text("run_id"),
+    sessionId: text("session_id"),
+    criteria: text("criteria").notNull(), // JSON
+    actions: text("actions").notNull(), // JSON
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_filter_events_gmail_filter_id").on(table.gmailFilterId),
+    index("idx_filter_events_run_id").on(table.runId),
+    index("idx_filter_events_session_id").on(table.sessionId),
+  ],
+);
+
 // --- sync_state ---
 // Singleton tracking Gmail sync progress
 export const syncState = sqliteTable("sync_state", {

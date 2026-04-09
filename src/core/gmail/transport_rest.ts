@@ -49,6 +49,9 @@ export function createRestTransport(config: Config): GmailTransport {
         }),
       );
     },
+    deleteLabel(id: string): Promise<void> {
+      return gmailApiRequest<void>(config, `/labels/${id}`, { method: "DELETE" });
+    },
     batchModifyMessages(input): Promise<void> {
       return gmailApiRequest<void>(
         config,

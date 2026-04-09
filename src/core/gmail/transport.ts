@@ -27,6 +27,7 @@ export interface GmailTransport {
     name: string;
     color?: RawGmailLabel["color"];
   }): Promise<RawGmailLabel>;
+  deleteLabel(id: string): Promise<void>;
   batchModifyMessages(input: {
     ids: string[];
     addLabelIds?: string[];

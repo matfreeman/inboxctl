@@ -18,6 +18,7 @@ const SYSTEM_LABEL_IDS = [
 ] as const;
 
 const CATEGORY_LABEL_PATTERN = "CATEGORY\\_%";
+const EXCLUDED_UNCATEGORIZED_LABELS = ["SPAM", "TRASH"] as const;
 
 export interface UncategorizedEmailSenderContext {
   totalFromSender: number;
@@ -122,8 +123,19 @@ function buildWhereClause(options: {
         AND label.value NOT LIKE ? ESCAPE '\\'
     )
     `,
+    `
+    NOT EXISTS (
+      SELECT 1
+      FROM json_each(COALESCE(e.label_ids, '[]')) AS label
+      WHERE label.value IN (${EXCLUDED_UNCATEGORIZED_LABELS.map(() => "?").join(", ")})
+    )
+    `,
   ];
-  const params: Array<number | string> = [...SYSTEM_LABEL_IDS, CATEGORY_LABEL_PATTERN];
+  const params: Array<number | string> = [
+    ...SYSTEM_LABEL_IDS,
+    CATEGORY_LABEL_PATTERN,
+    ...EXCLUDED_UNCATEGORIZED_LABELS,
+  ];
 
   if (options.unreadOnly) {
     whereParts.push("COALESCE(e.is_read, 0) = 0");

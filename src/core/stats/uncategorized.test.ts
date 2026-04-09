@@ -239,6 +239,42 @@ describe("getUncategorizedEmails", () => {
     expect(result.emails.map((email) => email.id)).toEqual(["recent-unread"]);
   });
 
+  it("excludes spam and trash labelled emails from uncategorized results", async () => {
+    const now = Date.now();
+
+    insertEmails([
+      createTestEmail({
+        id: "normal",
+        fromAddress: "updates@example.com",
+        subject: "Normal update",
+        date: now,
+        isRead: false,
+        labelIds: ["INBOX", "UNREAD"],
+      }),
+      createTestEmail({
+        id: "spam",
+        fromAddress: "coffee@coffeecompany.com.au",
+        subject: "Shipment Delivered",
+        date: now - 60_000,
+        isRead: false,
+        labelIds: ["UNREAD", "CATEGORY_UPDATES", "SPAM"],
+      }),
+      createTestEmail({
+        id: "trash",
+        fromAddress: "trash@example.com",
+        subject: "Old promo",
+        date: now - 120_000,
+        isRead: false,
+        labelIds: ["TRASH"],
+      }),
+    ]);
+
+    const result = await getUncategorizedEmails({ limit: 10 });
+
+    expect(result.totalUncategorized).toBe(1);
+    expect(result.emails.map((email) => email.id)).toEqual(["normal"]);
+  });
+
   it("supports pagination with offset and large limits", async () => {
     const now = Date.now();
 

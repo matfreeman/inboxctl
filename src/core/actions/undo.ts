@@ -1,6 +1,7 @@
 import { loadConfig } from "../../config.js";
 import { getSqlite } from "../db/client.js";
 import { restoreEmailLabels } from "../gmail/modify.js";
+import { disableRule, getRuleByName } from "../rules/deploy.js";
 import type {
   AuditAction,
   ExecutionItemRecord,
@@ -20,6 +21,9 @@ export interface UndoRunResult {
   warningCount: number;
   errorCount: number;
   status: ExecutionRunStatus;
+  ruleDisabled: boolean;
+  ruleId: string | null;
+  ruleName: string | null;
 }
 
 function getDatabase() {
@@ -118,6 +122,25 @@ export async function undoRun(runId: string): Promise<UndoRunResult> {
     updateItem(sqlite, item.id, "undone", null, undoneAt);
   }
 
+  let ruleDisabled = false;
+  let ruleName: string | null = null;
+
+  if (run.ruleId) {
+    try {
+      const rule = await getRuleByName(run.ruleId);
+      ruleName = rule?.name ?? null;
+
+      if (rule?.enabled) {
+        await disableRule(rule.id);
+        ruleDisabled = true;
+      }
+    } catch (error) {
+      const message = `Rule ${run.ruleId}: unable to auto-disable after undo. ${error instanceof Error ? error.message : String(error)}`;
+      warnings.push(message);
+      warningCount += 1;
+    }
+  }
+
   const status: ExecutionRunStatus = errorCount > 0 || warningCount > 0 ? "partial" : "undone";
   updateRun(sqlite, run.id, status, undoneAt);
 
@@ -137,5 +160,8 @@ export async function undoRun(runId: string): Promise<UndoRunResult> {
     warningCount,
     errorCount,
     status,
+    ruleDisabled,
+    ruleId: run.ruleId,
+    ruleName,
   };
 }

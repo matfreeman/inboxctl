@@ -21,6 +21,7 @@ const SYSTEM_LABEL_IDS = [
 
 const CATEGORY_LABEL_PATTERN = "CATEGORY\\_%";
 const MAX_EMAIL_IDS = 500;
+const EXCLUDED_UNCATEGORIZED_LABELS = ["SPAM", "TRASH"] as const;
 
 export type UncategorizedSenderConfidence = "high" | "medium" | "low";
 export type UncategorizedSenderSort = "email_count" | "newest" | "unread_rate";
@@ -29,16 +30,13 @@ export interface UncategorizedSender {
   sender: string;
   name: string;
   emailCount: number;
-  emailIds: string[];
-  emailIdsTruncated: boolean;
+  emailIds?: string[];
+  emailIdsTruncated?: boolean;
   unreadCount: number;
   unreadRate: number;
   newestDate: string | null;
   newestSubject: string | null;
-  newestSnippet: string | null;
-  secondSubject: string | null;
   isNewsletter: boolean;
-  detectionReason: string | null;
   hasUnsubscribe: boolean;
   confidence: UncategorizedSenderConfidence;
   signals: string[];
@@ -70,6 +68,7 @@ export interface GetUncategorizedSendersOptions {
   confidence?: UncategorizedSenderConfidence;
   since?: string;
   sortBy?: UncategorizedSenderSort;
+  includeEmailIds?: boolean;
 }
 
 interface UncategorizedSenderRow {
@@ -79,8 +78,6 @@ interface UncategorizedSenderRow {
   unreadCount: number;
   newestDate: number | null;
   newestSubject: string | null;
-  newestSnippet: string | null;
-  secondSubject: string | null;
   detectionReason: string | null;
   newsletterUnsubscribeLink: string | null;
   emailUnsubscribeHeaders: string | null;
@@ -125,8 +122,19 @@ function buildWhereClause(sinceTimestamp: number | null): {
         AND label.value NOT LIKE ? ESCAPE '\\'
     )
     `,
+    `
+    NOT EXISTS (
+      SELECT 1
+      FROM json_each(COALESCE(e.label_ids, '[]')) AS label
+      WHERE label.value IN (${EXCLUDED_UNCATEGORIZED_LABELS.map(() => "?").join(", ")})
+    )
+    `,
   ];
-  const params: Array<number | string> = [...SYSTEM_LABEL_IDS, CATEGORY_LABEL_PATTERN];
+  const params: Array<number | string> = [
+    ...SYSTEM_LABEL_IDS,
+    CATEGORY_LABEL_PATTERN,
+    ...EXCLUDED_UNCATEGORIZED_LABELS,
+  ];
 
   if (sinceTimestamp !== null) {
     whereParts.push("COALESCE(e.date, 0) >= ?");
@@ -186,11 +194,12 @@ export async function getUncategorizedSenders(
   await detectNewsletters();
 
   const sqlite = getStatsSqlite();
-  const limit = Math.min(500, normalizeLimit(options.limit, 100));
+  const limit = Math.min(500, normalizeLimit(options.limit, 50));
   const offset = Math.max(0, Math.floor(options.offset ?? 0));
   const minEmails = Math.max(1, Math.floor(options.minEmails ?? 1));
   const sinceTimestamp = resolveSinceTimestamp(options.since);
   const sortBy = options.sortBy ?? "email_count";
+  const includeEmailIds = options.includeEmailIds ?? false;
   const { clause, params } = buildWhereClause(sinceTimestamp);
 
   const rows = sqlite
@@ -233,24 +242,12 @@ export async function getUncategorizedSenders(
           ORDER BY COALESCE(u2.date, 0) DESC, u2.id ASC
           LIMIT 1
         ) AS newestSubject,
-        (
-          SELECT u2.snippet
-          FROM uncategorized AS u2
-          WHERE LOWER(u2.from_address) = grouped.senderKey
-          ORDER BY COALESCE(u2.date, 0) DESC, u2.id ASC
-          LIMIT 1
-        ) AS newestSnippet,
-        (
-          SELECT u2.subject
-          FROM uncategorized AS u2
-          WHERE LOWER(u2.from_address) = grouped.senderKey
-          ORDER BY COALESCE(u2.date, 0) DESC, u2.id ASC
-          LIMIT 1 OFFSET 1
-        ) AS secondSubject,
         grouped.detectionReason AS detectionReason,
         grouped.newsletterUnsubscribeLink AS newsletterUnsubscribeLink,
         grouped.emailUnsubscribeHeaders AS emailUnsubscribeHeaders,
         COALESCE(sender_totals.totalFromSender, grouped.emailCount) AS totalFromSender,
+        ${includeEmailIds
+          ? `
         (
           SELECT GROUP_CONCAT(u2.id, '\n')
           FROM (
@@ -260,6 +257,8 @@ export async function getUncategorizedSenders(
             ORDER BY COALESCE(date, 0) DESC, id ASC
           ) AS u2
         ) AS emailIds
+        `
+          : "NULL AS emailIds"}
       FROM (
         SELECT
           LOWER(u.from_address) AS senderKey,
@@ -291,33 +290,34 @@ export async function getUncategorizedSenders(
         detectionReason: row.detectionReason,
         listUnsubscribe: row.emailUnsubscribeHeaders,
       });
-      const emailIds = parseEmailIds(row.emailIds);
       const unsubscribe = resolveUnsubscribeTarget(
         row.newsletterUnsubscribeLink,
         row.emailUnsubscribeHeaders,
       );
       const sender = row.sender?.trim() || "";
       const domain = extractDomain(sender) || "";
+      const emailIds = includeEmailIds ? parseEmailIds(row.emailIds) : null;
 
       return {
         sender,
         name: row.name?.trim() || sender,
         emailCount: row.emailCount,
-        emailIds: emailIds.emailIds,
-        emailIdsTruncated: emailIds.truncated,
         unreadCount: row.unreadCount,
         unreadRate: roundPercent(row.unreadCount, row.emailCount),
         newestDate: toIsoString(row.newestDate),
         newestSubject: row.newestSubject || null,
-        newestSnippet: row.newestSnippet || null,
-        secondSubject: row.secondSubject || null,
         isNewsletter: Boolean(row.detectionReason || unsubscribe.unsubscribeLink),
-        detectionReason: row.detectionReason,
         hasUnsubscribe: Boolean(unsubscribe.unsubscribeLink),
         confidence: confidenceResult.confidence,
         signals: confidenceResult.signals,
         totalFromSender: row.totalFromSender ?? row.emailCount,
         domain,
+        ...(emailIds
+          ? {
+              emailIds: emailIds.emailIds,
+              emailIdsTruncated: emailIds.truncated,
+            }
+          : {}),
       } satisfies UncategorizedSender;
     })
     .filter((sender) => options.confidence ? sender.confidence === options.confidence : true)

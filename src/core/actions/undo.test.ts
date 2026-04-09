@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,6 +84,40 @@ function insertEmail(
       null,
       Date.now(),
     );
+}
+
+function insertRule(overrides: Partial<{
+  id: string;
+  name: string;
+  enabled: boolean;
+}> = {}) {
+  const sqlite = getSqlite(process.env.INBOXCTL_DB_PATH as string);
+  const id = overrides.id ?? randomUUID();
+  sqlite
+    .prepare(
+      `
+      INSERT INTO rules (
+        id, name, description, enabled, yaml_hash, conditions, actions, priority, deployed_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    )
+    .run(
+      id,
+      overrides.name ?? "archive-newsletters",
+      "Test rule",
+      overrides.enabled === false ? 0 : 1,
+      "hash",
+      JSON.stringify({ operator: "OR", matchers: [] }),
+      JSON.stringify([{ type: "archive" }]),
+      50,
+      Date.now(),
+      Date.now(),
+    );
+
+  return {
+    id,
+    name: overrides.name ?? "archive-newsletters",
+  };
 }
 
 describe("undo layer", () => {
@@ -205,5 +240,80 @@ describe("undo layer", () => {
 
     await undoRun(run.id);
     await expect(undoRun(run.id)).rejects.toThrow(/already undone/i);
+  });
+
+  it("auto-disables the originating rule after undoing a rule run", async () => {
+    insertEmail("msg-rule", ["INBOX", "UNREAD"], { isRead: false });
+    vi.mocked(restoreEmailLabels).mockResolvedValue({
+      emailId: "msg-rule",
+      beforeLabelIds: ["INBOX", "UNREAD"],
+      afterLabelIds: ["INBOX", "UNREAD"],
+      status: "applied",
+      appliedActions: [],
+    });
+
+    const rule = insertRule({ name: "github-notifications", enabled: true });
+    const run = await createExecutionRun({
+      sourceType: "rule",
+      ruleId: rule.id,
+      dryRun: false,
+      requestedActions: [{ type: "archive" }],
+      status: "applied",
+    });
+
+    await appendExecutionItem(run.id, {
+      emailId: "msg-rule",
+      status: "applied",
+      appliedActions: [{ type: "archive" }],
+      beforeLabelIds: ["INBOX", "UNREAD"],
+      afterLabelIds: ["UNREAD"],
+    });
+
+    const result = await undoRun(run.id);
+    const sqlite = getSqlite(process.env.INBOXCTL_DB_PATH as string);
+    const storedRule = sqlite
+      .prepare("SELECT enabled FROM rules WHERE id = ?")
+      .get(rule.id) as { enabled: number };
+
+    expect(result.ruleDisabled).toBe(true);
+    expect(result.ruleId).toBe(rule.id);
+    expect(result.ruleName).toBe("github-notifications");
+    expect(storedRule.enabled).toBe(0);
+  });
+
+  it("leaves already-disabled rules disabled and reports that no change was needed", async () => {
+    insertEmail("msg-disabled", ["INBOX"], { isRead: true });
+    vi.mocked(restoreEmailLabels).mockResolvedValue({
+      emailId: "msg-disabled",
+      beforeLabelIds: ["INBOX"],
+      afterLabelIds: ["INBOX"],
+      status: "applied",
+      appliedActions: [],
+    });
+
+    const rule = insertRule({ name: "already-disabled", enabled: false });
+    const run = await createExecutionRun({
+      sourceType: "rule",
+      ruleId: rule.id,
+      dryRun: false,
+      requestedActions: [{ type: "archive" }],
+      status: "applied",
+    });
+
+    await appendExecutionItem(run.id, {
+      emailId: "msg-disabled",
+      status: "applied",
+      appliedActions: [{ type: "archive" }],
+      beforeLabelIds: ["INBOX"],
+      afterLabelIds: [],
+    });
+
+    const result = await undoRun(run.id);
+
+    expect(result.status).toBe("undone");
+    expect(result.ruleDisabled).toBe(false);
+    expect(result.ruleId).toBe(rule.id);
+    expect(result.ruleName).toBe("already-disabled");
+    expect(result.warnings).toEqual([]);
   });
 });

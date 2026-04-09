@@ -1,7 +1,9 @@
 import { loadConfig } from "../../config.js";
+import { renderHtmlEmail } from "./body-format.js";
 import { getGmailTransport } from "./transport.js";
 import type {
   EmailDetail,
+  EmailBodySource,
   EmailMessage,
   RawGmailMessage,
   RawGmailMessagePart,
@@ -92,7 +94,16 @@ function extractTextBody(message: RawGmailMessage): string {
     return text;
   }
 
-  return decodeBase64Url(message.payload?.body?.data).trim();
+  const rootMimeType = message.payload?.mimeType?.toLowerCase();
+  if (rootMimeType === "text/plain") {
+    return decodeBase64Url(message.payload?.body?.data).trim();
+  }
+
+  if (!rootMimeType && !extractHtmlBody(message) && message.payload?.body?.data) {
+    return decodeBase64Url(message.payload.body.data).trim();
+  }
+
+  return "";
 }
 
 function extractHtmlBody(message: RawGmailMessage): string | null {
@@ -149,12 +160,22 @@ export function parseMessageDetail(message: RawGmailMessage): EmailDetail {
   const base = parseMessage(message);
   const textPlain = extractTextBody(message);
   const bodyHtml = extractHtmlBody(message);
+  const bodySource: EmailBodySource = textPlain
+    ? "text_plain"
+    : bodyHtml
+      ? "html_rendered"
+      : "snippet_fallback";
+  const body = textPlain
+    || (bodyHtml ? renderHtmlEmail(bodyHtml, 80).text : "")
+    || base.snippet
+    || "";
 
   return {
     ...base,
     textPlain,
-    body: textPlain || bodyHtml || "",
+    body,
     bodyHtml,
+    bodySource,
   };
 }
 

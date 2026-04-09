@@ -1,5 +1,6 @@
 import type { Config } from "../../config.js";
 import { loadConfig } from "../../config.js";
+import { getSqlite } from "../db/client.js";
 import type { GmailTransport } from "./transport.js";
 import type {
   GmailLabel,
@@ -17,6 +18,17 @@ interface LabelOptions {
   config?: Config;
   transport?: GmailTransport;
   forceRefresh?: boolean;
+}
+
+interface CleanupLabelOptions extends Omit<LabelOptions, "forceRefresh"> {
+  prefix?: string;
+  dryRun?: boolean;
+}
+
+export interface CleanupLabelsResult {
+  deletedLabels: string[];
+  skippedLabels: string[];
+  dryRun: boolean;
 }
 
 interface LabelCacheEntry {
@@ -114,6 +126,20 @@ function updateCacheLabel(config: Config, label: GmailLabel): void {
   const nextLabels = existing.labels.filter((entry) => entry.id !== label.id);
   nextLabels.push(label);
   setCache(config, nextLabels);
+}
+
+function removeCacheLabel(config: Config, labelId: string): void {
+  const key = getCacheKey(config);
+  const existing = labelCache.get(key);
+
+  if (!existing) {
+    return;
+  }
+
+  setCache(
+    config,
+    existing.labels.filter((entry) => entry.id !== labelId),
+  );
 }
 
 async function resolveContext(options?: LabelOptions): Promise<LabelContext> {
@@ -237,4 +263,72 @@ export async function createLabel(
   const label = toLabel(detailed) || created;
   updateCacheLabel(context.config, label);
   return label;
+}
+
+function countEmailsWithLabel(config: Config, labelId: string): number {
+  const sqlite = getSqlite(config.dbPath);
+  const rows = sqlite
+    .prepare(`SELECT label_ids FROM emails WHERE label_ids IS NOT NULL`)
+    .all() as Array<{ label_ids: string | null }>;
+
+  let count = 0;
+
+  for (const row of rows) {
+    if (!row.label_ids) {
+      continue;
+    }
+
+    try {
+      const labelIds = JSON.parse(row.label_ids) as string[];
+      if (labelIds.includes(labelId)) {
+        count += 1;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return count;
+}
+
+export async function cleanupEmptyLabels(
+  options?: CleanupLabelOptions,
+): Promise<CleanupLabelsResult> {
+  const prefix = options?.prefix?.trim() || "inboxctl/";
+  const dryRun = options?.dryRun ?? false;
+  const context = await resolveContext(options);
+  const labels = await getCachedLabels(context, true);
+  const deletedLabels: string[] = [];
+  const skippedLabels: string[] = [];
+
+  for (const label of labels) {
+    if (label.type !== "user") {
+      continue;
+    }
+
+    if (!label.name.startsWith(prefix)) {
+      skippedLabels.push(label.name);
+      continue;
+    }
+
+    if (countEmailsWithLabel(context.config, label.id) > 0) {
+      skippedLabels.push(label.name);
+      continue;
+    }
+
+    deletedLabels.push(label.name);
+
+    if (dryRun) {
+      continue;
+    }
+
+    await context.transport.deleteLabel(label.id);
+    removeCacheLabel(context.config, label.id);
+  }
+
+  return {
+    deletedLabels,
+    skippedLabels,
+    dryRun,
+  };
 }

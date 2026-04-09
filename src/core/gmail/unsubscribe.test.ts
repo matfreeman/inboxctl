@@ -130,6 +130,11 @@ function createTransport(initialLabels: Array<{ id: string; name: string; type?:
       labels.set(id, created);
       return created;
     }),
+    deleteLabel: vi.fn(async (id: string) => {
+      if (!labels.delete(id)) {
+        throw new Error(`Unknown label: ${id}`);
+      }
+    }),
     batchModifyMessages: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => ({ id: "sent-1", threadId: "thread-sent", labelIds: ["SENT"] })),
     listMessages: vi.fn(async () => ({ messages: [], resultSizeEstimate: 0 })),
