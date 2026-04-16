@@ -14,6 +14,18 @@ The format follows Keep a Changelog and the project uses Semantic Versioning.
 
 ### Security
 
+## [0.7.3] - 2026-04-16
+
+### Fixed
+
+- Replaced opaque `deleted_client` / `invalid_grant` / `token_revoked` OAuth errors with a clear message instructing users to run `inboxctl auth login` to re-authenticate
+
+## [0.7.2] - 2026-04-16
+
+### Added
+
+- `inboxctl login` top-level command as an alias for `inboxctl auth login`, so `npx inboxctl@latest login` works as expected
+
 ## [0.7.1] - 2026-04-09
 
 ### Fixed

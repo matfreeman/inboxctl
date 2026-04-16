@@ -1154,7 +1154,7 @@ function printDriftReport(result: Awaited<ReturnType<typeof detectDrift>>): void
 program
   .name("inboxctl")
   .description("CLI email management with MCP server, rules-as-code, and TUI")
-  .version("0.7.1")
+  .version("0.7.3")
   .option("--demo", "Launch the seeded demo mailbox")
   .option("--no-sync", "Launch the TUI without running the initial background sync");
 
@@ -1171,6 +1171,33 @@ program
       });
     } catch (error) {
       console.log(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("login")
+  .description("Authenticate with Gmail via OAuth2 (alias for auth login)")
+  .action(async () => {
+    const config = loadConfig();
+
+    try {
+      const result = await startOAuthFlow(config);
+      const reconciliation = reconcileCacheForAuthenticatedAccount(
+        config.dbPath,
+        result.email,
+        { clearLegacyUnscoped: true },
+      );
+      console.log(`Authenticated Gmail account: ${result.email}`);
+      console.log(`Redirect URI used: ${result.redirectUri}`);
+      if (reconciliation.cleared) {
+        console.log("Local cache reset to avoid mixing data from another Gmail account.");
+      }
+    } catch (error) {
+      console.log(error instanceof Error ? error.message : String(error));
+      const status = await loadRuntimeStatus();
+      printCheckpointSummary(status);
+      printGoogleCheckpointInstructions(status);
       process.exitCode = 1;
     }
   });

@@ -66,11 +66,21 @@ export async function getAuthenticatedTokens(
 
   if (isTokenExpired(tokens)) {
     const credentials = requireGoogleCredentials(config);
-    tokens = await refreshAccessToken(
-      tokens,
-      credentials.clientId,
-      credentials.clientSecret,
-    );
+    try {
+      tokens = await refreshAccessToken(
+        tokens,
+        credentials.clientId,
+        credentials.clientSecret,
+      );
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : String(error);
+      if (/deleted_client|invalid_client|invalid_grant|token_revoked|unauthorized_client/i.test(raw)) {
+        throw new Error(
+          `Gmail authentication is no longer valid (${raw}). Run \`inboxctl auth login\` to re-authenticate.`,
+        );
+      }
+      throw error;
+    }
     await saveTokens(config.tokensPath, tokens);
   }
 
